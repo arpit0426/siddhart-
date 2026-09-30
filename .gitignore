@@ -6,3 +6,12 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# SQLite runtime files (the seeded database itself is versioned for demos)
+data/*.db-wal
+data/*.db-shm
+data/uploads/
+
+# Test artefacts
+test-results/
+playwright-report/

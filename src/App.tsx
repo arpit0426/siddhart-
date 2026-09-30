@@ -1,163 +1,355 @@
-import React, { useState, useEffect } from 'react';
-import { AuthProvider, useAuth } from './context/AuthContext.tsx';
-import { Navbar } from './components/Navbar.tsx';
-import { CustomerPortal } from './components/CustomerPortal.tsx';
-import { SellerPortal } from './components/SellerPortal.tsx';
-import { RiderPortal } from './components/RiderPortal.tsx';
-import { CartDrawer } from './components/CartDrawer.tsx';
-import { WalkthroughAssistant } from './components/WalkthroughAssistant.tsx';
-import { AuthModal } from './components/AuthModal.tsx';
-import { Shield, MapPin, Heart } from 'lucide-react';
+import React from 'react';
+import { ToastProvider } from './context/ToastContext';
+import { AuthProvider, useAuth, roleHome } from './context/AuthContext';
+import { CartProvider } from './context/CartContext';
+import { AppShell } from './components/layout/AppShell';
+import { RequireRole } from './components/RequireRole';
+import { matchPath, navigate, useRoutePath } from './lib/router';
+import {
+  DiscoverPage,
+  LandingPage,
+  NotFoundPage,
+  ProductDetailPage,
+  StoreDetailPage,
+} from './pages/public';
+import { RoleLoginPage, RoleSignupPage } from './pages/auth';
+import {
+  AccountPage,
+  CartPage,
+  CheckoutPage,
+  OrderDetailPage,
+  OrdersPage,
+  RequestsPage,
+} from './pages/customer';
+import {
+  ProductEditorPage,
+  SellerDashboardPage,
+  SellerInventoryPage,
+  SellerOrderDetailPage,
+  SellerOrdersPage,
+  SellerPerformancePage,
+  SellerProductsPage,
+  SellerRequestsPage,
+  SellerStorePage,
+} from './pages/seller';
+import {
+  RiderDashboardPage,
+  RiderHistoryPage,
+  RiderJobDetailPage,
+  RiderJobsPage,
+  RiderProfilePage,
+} from './pages/rider';
+import type { Role } from './types';
 
-function MainApp() {
-  const { user, activeRoleView, setActiveRoleView, getAuthHeaders, demoLogin } = useAuth();
-  const [currentTab, setCurrentTab] = useState<string>('discover');
-  const [isCartOpen, setIsCartOpen] = useState<boolean>(false);
-  const [isAuthOpen, setIsAuthOpen] = useState<boolean>(false);
-  const [cartCount, setCartCount] = useState<number>(0);
-  const [cartItemsCount, setCartItemsCount] = useState<Record<string, number>>({});
+type RouteMatch = { element: React.ReactNode; key: string } | null;
 
-  const fetchCartCount = async () => {
-    if (!user || user.role !== 'customer') {
-      setCartCount(0);
-      setCartItemsCount({});
-      return;
-    }
-    try {
-      const res = await fetch('/api/customer/cart', { headers: getAuthHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        const total = (data.items || []).reduce((acc: number, item: any) => acc + item.quantity, 0);
-        const map: Record<string, number> = {};
-        (data.items || []).forEach((item: any) => {
-          map[item.product_id] = item.quantity;
-        });
-        setCartCount(total);
-        setCartItemsCount(map);
-      }
-    } catch {
-      // Ignore
-    }
-  };
+const ROLES: Role[] = ['customer', 'seller', 'rider'];
 
-  useEffect(() => {
-    fetchCartCount();
-  }, [user]);
+function resolveRoute(path: string): RouteMatch {
+  const pathname = path.split('?')[0].replace(/\/+$/, '') || '/';
 
-  // When active role changes, adjust default tab
-  useEffect(() => {
-    if (activeRoleView === 'customer') {
-      if (!['discover', 'orders', 'requests'].includes(currentTab)) {
-        setCurrentTab('discover');
-      }
-    } else if (activeRoleView === 'seller') {
-      if (!['seller-orders', 'seller-inventory', 'seller-requests'].includes(currentTab)) {
-        setCurrentTab('seller-orders');
-      }
-    } else if (activeRoleView === 'rider') {
-      if (!['rider-jobs', 'rider-active', 'rider-history'].includes(currentTab)) {
-        setCurrentTab('rider-jobs');
-      }
-    }
-  }, [activeRoleView]);
+  if (pathname === '/') return { key: '/', element: <LandingPage /> };
+  if (pathname === '/discover') return { key: 'discover', element: <DiscoverPage tab="products" /> };
+  if (pathname === '/discover/stores') return { key: 'discover-stores', element: <DiscoverPage tab="stores" /> };
 
-  const handleAddToCart = async (productId: string, qty: number) => {
-    if (!user) {
-      await demoLogin('customer');
-    }
-    try {
-      const res = await fetch('/api/customer/cart/items', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ productId, quantity: qty })
-      });
-      if (res.ok) {
-        fetchCartCount();
-      }
-    } catch (e) {
-      console.error('Failed to add to cart:', e);
-    }
-  };
+  const storeMatch = matchPath('/stores/:id', pathname);
+  if (storeMatch) return { key: `store-${storeMatch.id}`, element: <StoreDetailPage storeId={storeMatch.id} /> };
 
-  const handleOrderSuccess = () => {
-    fetchCartCount();
-    setCurrentTab('orders');
-  };
+  const productMatch = matchPath('/products/:id', pathname);
+  if (productMatch) {
+    return { key: `product-${productMatch.id}`, element: <ProductDetailPage productId={productMatch.id} /> };
+  }
 
-  return (
-    <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-slate-900 font-['Plus_Jakarta_Sans',sans-serif]">
-      {/* Top Bar Navigation */}
-      <Navbar
-        onOpenCart={() => setIsCartOpen(true)}
-        cartCount={cartCount}
-        onOpenAuth={() => setIsAuthOpen(true)}
-        currentTab={currentTab}
-        setCurrentTab={setCurrentTab}
-      />
+  const loginMatch = matchPath('/:role/login', pathname);
+  if (loginMatch && ROLES.includes(loginMatch.role as Role)) {
+    return { key: `login-${loginMatch.role}`, element: <RoleLoginPage role={loginMatch.role as Role} /> };
+  }
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* Interactive Guided Demo Roadmap */}
-        <WalkthroughAssistant onNavigateTab={(tab) => setCurrentTab(tab)} />
+  const signupMatch = matchPath('/:role/signup', pathname);
+  if (signupMatch && ROLES.includes(signupMatch.role as Role)) {
+    return { key: `signup-${signupMatch.role}`, element: <RoleSignupPage role={signupMatch.role as Role} /> };
+  }
 
-        {/* Dynamic View based on Active Role Persona */}
-        {activeRoleView === 'customer' && (
-          <CustomerPortal
-            currentTab={currentTab}
-            onOrderPlaced={handleOrderSuccess}
-            onAddToCart={handleAddToCart}
-            cartItemsCount={cartItemsCount}
-          />
-        )}
+  /* ----------------------------- Customer ------------------------------- */
+  if (pathname === '/customer/orders') {
+    return {
+      key: 'customer-orders',
+      element: (
+        <RequireRole role="customer">
+          <OrdersPage />
+        </RequireRole>
+      ),
+    };
+  }
+  const customerOrderMatch = matchPath('/customer/orders/:id', pathname) ?? matchPath('/customer/order/:id', pathname);
+  if (customerOrderMatch) {
+    return {
+      key: `customer-order-${customerOrderMatch.id}`,
+      element: (
+        <RequireRole role="customer">
+          <OrderDetailPage orderId={customerOrderMatch.id} />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/customer/cart') navigate('/cart', { replace: true });
+  if (pathname === '/customer/checkout') navigate('/checkout', { replace: true });
+  if (pathname === '/customer/requests') navigate('/requests', { replace: true });
+  if (pathname === '/customer/account') navigate('/account', { replace: true });
+  if (pathname === '/customer' || pathname === '/customer/discover') {
+    return { key: 'customer-discover', element: <DiscoverPage tab="products" /> };
+  }
 
-        {activeRoleView === 'seller' && (
-          <SellerPortal currentTab={currentTab} />
-        )}
+  if (pathname === '/cart') {
+    return {
+      key: 'cart',
+      element: (
+        <RequireRole role="customer">
+          <CartPage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/checkout') {
+    return {
+      key: 'checkout',
+      element: (
+        <RequireRole role="customer">
+          <CheckoutPage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/orders') {
+    return {
+      key: 'orders',
+      element: (
+        <RequireRole role="customer">
+          <OrdersPage />
+        </RequireRole>
+      ),
+    };
+  }
+  const orderMatch = matchPath('/orders/:id', pathname);
+  if (orderMatch) {
+    return {
+      key: `order-${orderMatch.id}`,
+      element: (
+        <RequireRole role="customer">
+          <OrderDetailPage orderId={orderMatch.id} />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/requests') {
+    return {
+      key: 'requests',
+      element: (
+        <RequireRole role="customer">
+          <RequestsPage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/account') {
+    return {
+      key: 'account',
+      element: (
+        <RequireRole role="customer">
+          <AccountPage />
+        </RequireRole>
+      ),
+    };
+  }
 
-        {activeRoleView === 'rider' && (
-          <RiderPortal currentTab={currentTab} />
-        )}
-      </main>
+  /* ------------------------------ Seller -------------------------------- */
+  if (pathname === '/seller') {
+    return {
+      key: 'seller',
+      element: (
+        <RequireRole role="seller">
+          <SellerDashboardPage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/seller/orders') {
+    return {
+      key: 'seller-orders',
+      element: (
+        <RequireRole role="seller">
+          <SellerOrdersPage />
+        </RequireRole>
+      ),
+    };
+  }
+  const sellerOrderMatch = matchPath('/seller/orders/:id', pathname);
+  if (sellerOrderMatch) {
+    return {
+      key: `seller-order-${sellerOrderMatch.id}`,
+      element: (
+        <RequireRole role="seller">
+          <SellerOrderDetailPage orderId={sellerOrderMatch.id} />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/seller/products') {
+    return {
+      key: 'seller-products',
+      element: (
+        <RequireRole role="seller">
+          <SellerProductsPage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/seller/products/new') {
+    return {
+      key: 'seller-product-new',
+      element: (
+        <RequireRole role="seller">
+          <ProductEditorPage />
+        </RequireRole>
+      ),
+    };
+  }
+  const sellerProductMatch = matchPath('/seller/products/:id', pathname);
+  if (sellerProductMatch) {
+    return {
+      key: `seller-product-${sellerProductMatch.id}`,
+      element: (
+        <RequireRole role="seller">
+          <ProductEditorPage productId={sellerProductMatch.id} />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/seller/inventory') {
+    return {
+      key: 'seller-inventory',
+      element: (
+        <RequireRole role="seller">
+          <SellerInventoryPage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/seller/requests') {
+    return {
+      key: 'seller-requests',
+      element: (
+        <RequireRole role="seller">
+          <SellerRequestsPage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/seller/store') {
+    return {
+      key: 'seller-store',
+      element: (
+        <RequireRole role="seller">
+          <SellerStorePage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/seller/performance') {
+    return {
+      key: 'seller-performance',
+      element: (
+        <RequireRole role="seller">
+          <SellerPerformancePage />
+        </RequireRole>
+      ),
+    };
+  }
 
-      {/* Cart Drawer */}
-      <CartDrawer
-        isOpen={isCartOpen}
-        onClose={() => setIsCartOpen(false)}
-        onOrderSuccess={handleOrderSuccess}
-        onCartChange={fetchCartCount}
-      />
+  /* ------------------------------- Rider -------------------------------- */
+  if (pathname === '/rider') {
+    return {
+      key: 'rider',
+      element: (
+        <RequireRole role="rider">
+          <RiderDashboardPage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/rider/jobs') {
+    return {
+      key: 'rider-jobs',
+      element: (
+        <RequireRole role="rider">
+          <RiderJobsPage />
+        </RequireRole>
+      ),
+    };
+  }
+  const riderJobMatch = matchPath('/rider/jobs/:id', pathname);
+  if (riderJobMatch) {
+    return {
+      key: `rider-job-${riderJobMatch.id}`,
+      element: (
+        <RequireRole role="rider">
+          <RiderJobDetailPage jobId={riderJobMatch.id} />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/rider/history') {
+    return {
+      key: 'rider-history',
+      element: (
+        <RequireRole role="rider">
+          <RiderHistoryPage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/rider/profile' || pathname === '/rider/onboarding') {
+    return {
+      key: 'rider-profile',
+      element: (
+        <RequireRole role="rider">
+          <RiderProfilePage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/orders/new') {
+    navigate('/checkout', { replace: true });
+    return { key: 'redirect-checkout', element: null };
+  }
 
-      {/* Auth Modal */}
-      <AuthModal
-        isOpen={isAuthOpen}
-        onClose={() => setIsAuthOpen(false)}
-      />
-
-      {/* Clean Footer */}
-      <footer className="bg-white border-t border-slate-200 py-6 px-4 text-xs text-slate-500 mt-12">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-slate-900">NearBuy</span>
-            <span>— What You Need, Already Nearby.</span>
-          </div>
-
-          <div className="flex items-center gap-4 text-slate-400">
-            <span>Dwarka, New Delhi</span>
-            <span>·</span>
-            <span>All 3 Roles Seeded &amp; Persisted</span>
-            <span>·</span>
-            <span>Dual-Code Verification (PK/DL)</span>
-          </div>
-        </div>
-      </footer>
-    </div>
-  );
+  return { key: '404', element: <NotFoundPage /> };
 }
+
+const Shell: React.FC = () => {
+  const path = useRoutePath();
+  const { user } = useAuth();
+  const route = resolveRoute(path);
+
+  // Workspace home shortcuts for signed-in users hitting the landing page.
+  React.useEffect(() => {
+    if (path === '/' && user) {
+      const home = roleHome(user.role);
+      if (home !== '/discover') navigate(home, { replace: true });
+    }
+  }, [path, user]);
+
+  return <AppShell>{route ? route.element : <NotFoundPage />}</AppShell>;
+};
 
 export default function App() {
   return (
-    <AuthProvider>
-      <MainApp />
-    </AuthProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <CartProvider>
+          <Shell />
+        </CartProvider>
+      </AuthProvider>
+    </ToastProvider>
   );
 }
