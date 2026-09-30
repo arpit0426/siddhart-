@@ -1,0 +1,33 @@
+# Render blueprint for NearBuy (https://render.com/docs/blueprint-spec).
+#
+# 1. Push this branch and point Render at the repository, or use
+#    "New + → Blueprint" and select this file.
+# 2. Set APP_URL to the service URL Render assigns (e.g. https://nearbuy.onrender.com).
+# 3. Keep ENABLE_DEMO_ACCOUNTS only if this is a demo/staging environment —
+#    delete it (or set it to false) for a real production launch.
+services:
+  - type: web
+    name: nearbuy
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health/ready
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_URL
+        sync: false
+      - key: DATABASE_FILE
+        value: /app/data/nearbuy.db
+      - key: UPLOADS_DIR
+        value: /app/data/uploads
+      - key: COOKIE_SECURE
+        value: "true"
+      # Demo/staging only: seeds the customer/seller/rider demo accounts.
+      - key: ENABLE_DEMO_ACCOUNTS
+        value: "true"
+    disk:
+      name: nearbuy-data
+      mountPath: /app/data
+      sizeGB: 1

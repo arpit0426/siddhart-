@@ -170,11 +170,39 @@ GET /health/ready  → { "status": "ready", "database": "connected",
 
 ## 7. Deploying
 
-1. **Install & build**: `npm ci && npm run build`.
-2. **Persist the database**: mount a volume and set `DATABASE_FILE=/data/nearbuy.db` (SQLite in WAL mode; back up the `.db`, `-wal` and `-shm` files together).
-3. **Run**: `NODE_ENV=production PORT=$PORT npm start`. The process serves the API and the built SPA, returns JSON 404s for `/api/*` and serves `index.html` for deep links such as `/seller/orders/ord_123`.
-4. **Environment**: set `APP_URL=https://your-domain` (and `ALLOWED_ORIGINS` if you use extra origins), keep `COOKIE_SECURE=true`, leave `ENABLE_DEMO_ACCOUNTS` unset for a real deployment, and set `TRUST_PROXY=true` behind a load balancer.
-5. **Health check**: point the platform probe at `/health/ready`.
-6. **Uploads**: `UPLOADS_DIR` must be a persistent volume as well, or point it at object storage.
+The app is a single Node process that serves both the API and the built SPA, so any Node host with a persistent disk works. The repository ships a `Dockerfile`, a `.dockerignore` and a Render blueprint (`render.yaml`).
 
-Deployment of this sandbox build to a public host was **not** performed: the repository contains no hosting-provider configuration (no Vercel/Netlify/Render/Fly/Cloud Run descriptors) and no credentials. Everything above is verified locally in production mode (`npm run build` + `NODE_ENV=production npm start`, including deep links and `/health/ready`).
+### Render (blueprint — fastest path)
+1. Push this branch to GitHub (already done: `arena/01a0f344-siddhart`).
+2. In Render: **New → Blueprint**, pick the repository and the branch, and apply `render.yaml`. It creates a Docker web service with a 1 GB disk mounted at `/app/data`, `DATABASE_FILE=/app/data/nearbuy.db`, `COOKIE_SECURE=true` and health check `/health/ready`.
+3. When the first deploy finishes, set `APP_URL` to the assigned `https://<service>.onrender.com` URL in **Environment** and redeploy. On the first boot the service runs migrations 001–008 and (with `ENABLE_DEMO_ACCOUNTS=true`) seeds the demo data.
+4. Remove `ENABLE_DEMO_ACCOUNTS` (or set it to `false`) and delete the demo accounts before treating the deployment as production.
+
+### Railway / Fly.io / any Node host
+1. **Build**: `npm ci && npm run build`.
+2. **Start**: `NODE_ENV=production PORT=$PORT npm start` (Node ≥ 22.5 — required by `node:sqlite`).
+3. **Persist**: mount a volume and set `DATABASE_FILE=/data/nearbuy.db` plus `UPLOADS_DIR=/data/uploads`; back up the `.db`, `-wal` and `-shm` files together.
+4. **Health probe**: `/health/ready` (liveness is `/health`).
+
+### Docker (verified contract, image not built in this sandbox)
+```bash
+docker build -t nearbuy .
+docker run -p 3000:3000 -v nearbuy-data:/app/data \
+  -e APP_URL=https://your-domain \
+  -e ENABLE_DEMO_ACCOUNTS=true \
+  nearbuy
+```
+The image uses a two-stage build: full dependencies to produce `dist/`, then a production-only install (`npm ci --omit=dev`) for the runtime. That runtime contract — production-only dependencies, built SPA, `npm start` — is verified in this repository (see the deployment section of the report), but the image itself was not built here because Docker is unavailable in the sandbox.
+
+### Environment for a hosted deployment
+| Variable | Value |
+| :--- | :--- |
+| `NODE_ENV` | `production` |
+| `APP_URL` | your public https URL |
+| `DATABASE_FILE` | `/app/data/nearbuy.db` (path inside the volume) |
+| `UPLOADS_DIR` | `/app/data/uploads` |
+| `COOKIE_SECURE` | `true` (HTTPS termination at the proxy is fine; `TRUST_PROXY=true`) |
+| `ENABLE_DEMO_ACCOUNTS` | `true` for staging demos only — leave unset in production |
+| `ALLOWED_ORIGINS` | only if you serve the SPA from another origin |
+
+Deployment of this build to a public URL was **not** performed: no hosting target or credentials exist for it here, and the sandbox has no external deploy path. Everything above is verified locally (`npm run build` + `NODE_ENV=production npm start`, including deep links, JSON 404s and `/health/ready`).
