@@ -226,10 +226,23 @@ const rider = {
 /* Tests                                                                      */
 /* -------------------------------------------------------------------------- */
 
-await suite.test('landing page renders for anonymous visitors', async () => {
+await suite.test('the authentication gateway is the first screen for anonymous visitors', async () => {
   const view = await renderAt('/');
-  assert.match(view.text, /Pick your workspace/);
-  assert.match(view.text, /NearBuy/);
+  assert.match(view.text, /What You Need,/);
+  assert.match(view.text, /Already Nearby/);
+  assert.match(view.text, /Choose your role/);
+  for (const role of ['Customer', 'Seller', 'Rider']) {
+    assert.match(view.text, new RegExp(role));
+  }
+  assert.match(view.text, /Login/);
+  assert.match(view.text, /Sign Up/);
+  assert.match(view.text, /Recover Account/);
+  view.cleanup();
+});
+
+await suite.test('an authenticated visitor is taken from the gateway to their workspace', async () => {
+  const view = await renderAt('/', customer);
+  assert.equal(view.path, '/customer', 'signed-in customers should land on /customer');
   view.cleanup();
 });
 
@@ -257,21 +270,60 @@ await suite.test('product and store deep links render their detail pages', async
   storeView.cleanup();
 });
 
-await suite.test('role login pages explain cookie sessions and offer signup', async () => {
+await suite.test('role auth pages offer login, demo account, signup and recovery', async () => {
   for (const role of ['customer', 'seller', 'rider']) {
-    const view = await renderAt(`/${role}/login`);
-    assert.match(view.text, /HttpOnly cookies/);
-    assert.match(view.text, new RegExp(`Create a ${role} account`));
+    const view = await renderAt(`/${role}/auth`);
+    assert.match(view.text, new RegExp(`${role} login`, 'i'));
+    assert.match(view.text, /Forgot Password\?/);
+    assert.match(view.text, new RegExp(`Create ${role.charAt(0).toUpperCase() + role.slice(1)} Account`));
+    assert.match(view.text, /Use Demo Account/);
+    assert.match(view.text, /Recover Account|Forgot Password/);
     view.cleanup();
   }
 });
 
-await suite.test('guarded routes redirect anonymous visitors to the right login', async () => {
+await suite.test('legacy /:role/login links redirect into the /:role/auth flow', async () => {
+  const view = await renderAt('/customer/login');
+  assert.equal(view.path, '/customer/auth');
+  view.cleanup();
+});
+
+await suite.test('role signup pages render the role-specific fields', async () => {
+  const customerView = await renderAt('/customer/signup');
+  assert.match(customerView.text, /Create your customer account/);
+  assert.match(customerView.text, /accept the NearBuy .*terms/);
+  customerView.cleanup();
+
+  const sellerView = await renderAt('/seller/signup');
+  assert.match(sellerView.text, /Your store/);
+  assert.match(sellerView.text, /Store name/);
+  assert.match(sellerView.text, /Operating days/);
+  sellerView.cleanup();
+
+  const riderView = await renderAt('/rider/signup');
+  assert.match(riderView.text, /Address \/ location/);
+  assert.match(riderView.text, /Vehicle type/);
+  riderView.cleanup();
+});
+
+await suite.test('recovery pages offer request and reset steps', async () => {
+  const view = await renderAt('/customer/recover');
+  assert.match(view.text, /Recover Account/);
+  assert.match(view.text, /Request recovery/);
+  view.cleanup();
+
+  const resetView = await renderAt('/seller/recover?token=demo-token');
+  assert.match(resetView.text, /New password/);
+  resetView.cleanup();
+});
+
+await suite.test('guarded routes redirect anonymous visitors to the right auth flow', async () => {
   for (const [path, expected] of [
-    ['/cart', '/customer/login'],
-    ['/orders', '/customer/login'],
-    ['/seller/orders', '/seller/login'],
-    ['/rider/jobs', '/rider/login'],
+    ['/cart', '/customer/auth'],
+    ['/orders', '/customer/auth'],
+    ['/customer', '/customer/auth'],
+    ['/seller/orders', '/seller/auth'],
+    ['/rider/jobs', '/rider/auth'],
   ] as const) {
     const view = await renderAt(path);
     assert.equal(view.path, expected, `${path} should redirect to ${expected}`);
@@ -326,7 +378,7 @@ await suite.test('a customer cannot open the seller workspace (client guard)', a
 });
 
 await suite.test('pages expose accessible names, labels and image alt text', async () => {
-  const pages = ['/', '/discover', '/customer/login', '/seller/login', '/rider/login'];
+  const pages = ['/', '/discover', '/customer/auth', '/seller/auth', '/rider/auth'];
   for (const page of pages) {
     const view = await renderAt(page);
     const container = document.body.lastElementChild as HTMLElement;

@@ -11,7 +11,7 @@ type Size = 'sm' | 'md' | 'lg';
 
 const VARIANTS: Record<Variant, string> = {
   primary:
-    'bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:outline-emerald-700 disabled:bg-emerald-300',
+    'bg-blue-600 text-white hover:bg-blue-700 focus-visible:outline-blue-700 disabled:bg-blue-300',
   success:
     'bg-emerald-700 text-white hover:bg-emerald-800 focus-visible:outline-emerald-800 disabled:bg-emerald-300',
   secondary:
@@ -207,7 +207,7 @@ export const Field: React.FC<FieldProps> = ({ label, hint, error, id, className 
         {...rest}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy || undefined}
-        className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 ${
+        className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 ${
           error ? 'border-red-400' : 'border-slate-300'
         } ${className}`}
       />
@@ -253,7 +253,7 @@ export const SelectField: React.FC<SelectFieldProps> = ({
         {...rest}
         aria-invalid={error ? true : undefined}
         aria-describedby={hint ? `${fieldId}-hint` : undefined}
-        className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 ${
+        className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 ${
           error ? 'border-red-400' : 'border-slate-300'
         } ${className}`}
       >
@@ -286,7 +286,7 @@ export const TextAreaField: React.FC<
         id={fieldId}
         {...rest}
         aria-invalid={error ? true : undefined}
-        className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 ${
+        className={`w-full rounded-lg border px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 ${
           error ? 'border-red-400' : 'border-slate-300'
         } ${className}`}
       />

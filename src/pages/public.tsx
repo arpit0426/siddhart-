@@ -1,16 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ArrowRight,
   Bike,
   Clock,
   MapPin,
   PackageSearch,
   Search,
-  ShieldCheck,
   ShoppingBag,
   Store as StoreIcon,
   Tag,
-  Truck,
 } from 'lucide-react';
 import { Link, navigate, useQueryParams } from '../lib/router';
 import { api, errorMessage } from '../lib/api';
@@ -38,135 +35,6 @@ import {
 } from '../components/ui';
 
 /* -------------------------------------------------------------------------- */
-/* Landing                                                                    */
-/* -------------------------------------------------------------------------- */
-
-export const LandingPage: React.FC = () => {
-  const { user, config } = useAuth();
-
-  const highlights = [
-    {
-      icon: <StoreIcon className="h-5 w-5 text-emerald-700" aria-hidden="true" />,
-      title: 'Real neighbourhood stores',
-      body: 'Dwarka kirana, dairy, pharmacy and produce stores manage their own catalogue and stock in NearBuy.',
-    },
-    {
-      icon: <Truck className="h-5 w-5 text-emerald-700" aria-hidden="true" />,
-      title: 'Verified handoff codes',
-      body: 'Sellers hand over with a pickup code, riders close the loop with the customer’s delivery code.',
-    },
-    {
-      icon: <ShieldCheck className="h-5 w-5 text-emerald-700" aria-hidden="true" />,
-      title: 'One platform, three workspaces',
-      body: 'Customers, sellers and riders each get a purpose-built workspace backed by the same live order data.',
-    },
-  ];
-
-  return (
-    <div className="space-y-10">
-      <section className="overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-800 via-emerald-800 to-teal-900 px-6 py-10 text-white sm:px-10 sm:py-14">
-        <div className="max-w-3xl">
-          <Badge tone="success" className="border-emerald-400/40 bg-emerald-500/20 text-emerald-50">
-            Live in Dwarka, New Delhi
-          </Badge>
-          <h1 className="mt-4 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">
-            What You Need, Already Nearby.
-          </h1>
-          <p className="mt-3 max-w-2xl text-sm leading-relaxed text-emerald-50 sm:text-base">
-            Order milk, atta, medicines or fresh produce from shops around the corner. Every order is
-            picked, packed and delivered by real people in your neighbourhood - with a verified handoff
-            at both ends.
-          </p>
-          <div className="mt-6 flex flex-wrap gap-3">
-            <Link
-              to="/discover"
-              className="inline-flex items-center gap-2 rounded-lg bg-white px-5 py-3 text-sm font-bold text-emerald-900 hover:bg-emerald-50"
-            >
-              <Search className="h-4 w-4" aria-hidden="true" />
-              Browse nearby stores
-            </Link>
-            {!user && (
-              <Link
-                to="/customer/signup"
-                className="inline-flex items-center gap-2 rounded-lg border border-emerald-200/60 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Create an account
-                <ArrowRight className="h-4 w-4" aria-hidden="true" />
-              </Link>
-            )}
-          </div>
-          {config?.demoMode && (
-            <p className="mt-5 inline-flex flex-wrap items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-[11px] text-emerald-50">
-              <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-              Demo/staging environment — seeded demo accounts and data are available.
-              <Link to="/customer/login" className="font-semibold underline">
-                Sign in
-              </Link>
-            </p>
-          )}
-        </div>
-      </section>
-
-      <section aria-labelledby="how-it-works" className="grid gap-4 sm:grid-cols-3">
-        <h2 id="how-it-works" className="sr-only">
-          How NearBuy works
-        </h2>
-        {highlights.map((item) => (
-          <Card key={item.title} className="p-5">
-            <div className="mb-3 inline-flex rounded-lg bg-emerald-50 p-2">{item.icon}</div>
-            <h3 className="text-sm font-bold text-slate-900">{item.title}</h3>
-            <p className="mt-1 text-xs leading-relaxed text-slate-600">{item.body}</p>
-          </Card>
-        ))}
-      </section>
-
-      <section aria-labelledby="portals" className="space-y-4">
-        <SectionHeader
-          title="Pick your workspace"
-          subtitle="One NearBuy account, one role - the server enforces what each role can see and do."
-        />
-        <div className="grid gap-4 sm:grid-cols-3">
-          {[
-            {
-              role: 'customer',
-              title: 'For customers',
-              body: 'Discover nearby stores, build a cart across shops, check out with clear INR totals.',
-              action: 'Customer sign in',
-            },
-            {
-              role: 'seller',
-              title: 'For sellers',
-              body: 'Publish your store and catalogue, manage stock, accept and pack orders.',
-              action: 'Seller sign in',
-            },
-            {
-              role: 'rider',
-              title: 'For delivery partners',
-              body: 'Claim deliveries, verify pickup and delivery codes, track earnings.',
-              action: 'Rider sign in',
-            },
-          ].map((portal) => (
-            <Card key={portal.role} className="flex flex-col justify-between p-5">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">{portal.title}</h3>
-                <p className="mt-1 text-xs leading-relaxed text-slate-600">{portal.body}</p>
-              </div>
-              <Link
-                to={`/${portal.role}/login`}
-                className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 hover:text-emerald-900"
-              >
-                {portal.action}
-                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-              </Link>
-            </Card>
-          ))}
-        </div>
-      </section>
-    </div>
-  );
-};
-
-/* -------------------------------------------------------------------------- */
 /* Discovery                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -174,11 +42,13 @@ type DiscoverTab = 'products' | 'stores';
 
 interface DiscoverProps {
   tab?: DiscoverTab;
+  /** URL root this page lives at — /discover publicly, /customer in the workspace. */
+  basePath?: string;
 }
 
 const CATEGORY_OPTIONS_FALLBACK = ['All categories'];
 
-export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products' }) => {
+export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products', basePath = '/discover' }) => {
   const params = useQueryParams();
   const { user } = useAuth();
   const { cart, updateItem } = useCart();
@@ -236,7 +106,7 @@ export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products' }) => {
     if (category) query.set('category', category);
     if (storeFilter) query.set('store', storeFilter);
     const suffix = query.toString();
-    const target = activeTab === 'stores' ? '/discover/stores' : '/discover';
+    const target = activeTab === 'stores' ? `${basePath}/stores` : basePath;
     const next = suffix ? `${target}?${suffix}` : target;
     if (window.location.pathname + window.location.search !== next) {
       navigate(next, { replace: true, scroll: false });
@@ -256,7 +126,7 @@ export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products' }) => {
 
   const handleAdd = async (product: Product) => {
     if (!user) {
-      navigate(`/customer/login?next=${encodeURIComponent('/discover')}`);
+      navigate(`/customer/auth?next=${encodeURIComponent('/discover')}`);
       return;
     }
     if (user.role !== 'customer') {
@@ -297,7 +167,7 @@ export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products' }) => {
                 value={searchInput}
                 onChange={(event) => setSearchInput(event.target.value)}
                 placeholder="Amul Taaza, atta, salt, pharmacy…"
-                className="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-3 text-sm outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                className="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-3 text-sm outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
               />
             </div>
           </div>
@@ -340,7 +210,7 @@ export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products' }) => {
                   value={maxPrice}
                   onChange={(event) => setMaxPrice(event.target.value)}
                   placeholder="Any"
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
                 />
               </div>
               <div className="flex items-end">
@@ -349,7 +219,7 @@ export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products' }) => {
                     type="checkbox"
                     checked={inStockOnly}
                     onChange={(event) => setInStockOnly(event.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                   />
                   In stock only
                 </label>
@@ -481,14 +351,14 @@ export const ProductCard: React.FC<{
       </Link>
       <div className="flex flex-1 flex-col p-4">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{product.category}</span>
-        <Link to={`/products/${product.id}`} className="mt-0.5 text-sm font-bold text-slate-900 hover:text-emerald-700">
+        <Link to={`/products/${product.id}`} className="mt-0.5 text-sm font-bold text-slate-900 hover:text-blue-700">
           {product.name}
         </Link>
         <p className="mt-1 line-clamp-2 text-xs text-slate-500">{product.description}</p>
         <div className="mt-auto pt-3">
           <div className="flex items-center justify-between">
             <span className="text-base font-extrabold tabular-nums text-slate-900">{formatINR(product.price)}</span>
-            <span className={`text-[11px] font-medium ${outOfStock ? 'text-red-600' : 'text-emerald-700'}`}>
+            <span className={`text-[11px] font-medium ${outOfStock ? 'text-red-600' : 'text-blue-700'}`}>
               {outOfStock ? 'Unavailable' : `${product.stock} in stock`}
             </span>
           </div>
@@ -522,7 +392,7 @@ export const StoreCard: React.FC<{ store: Store }> = ({ store }) => (
     </Link>
     <div className="flex flex-1 flex-col p-4">
       <div className="flex items-start justify-between gap-2">
-        <Link to={`/stores/${store.id}`} className="text-sm font-bold text-slate-900 hover:text-emerald-700">
+        <Link to={`/stores/${store.id}`} className="text-sm font-bold text-slate-900 hover:text-blue-700">
           {store.name}
         </Link>
         <Badge tone={store.status === 'open' ? 'success' : 'neutral'}>
@@ -581,7 +451,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
 
   const add = async (product: Product) => {
     if (!user) {
-      navigate(`/customer/login?next=${encodeURIComponent(`/stores/${storeId}`)}`);
+      navigate(`/customer/auth?next=${encodeURIComponent(`/stores/${storeId}`)}`);
       return;
     }
     setAddingId(product.id);
@@ -703,7 +573,7 @@ export const ProductDetailPage: React.FC<{ productId: string }> = ({ productId }
 
   const requireCustomer = () => {
     if (!user) {
-      navigate(`/customer/login?next=${encodeURIComponent(`/products/${productId}`)}`);
+      navigate(`/customer/auth?next=${encodeURIComponent(`/products/${productId}`)}`);
       return false;
     }
     if (user.role !== 'customer') {
@@ -779,13 +649,13 @@ export const ProductDetailPage: React.FC<{ productId: string }> = ({ productId }
             <h1 className="mt-2 text-xl font-bold text-slate-900">{product.name}</h1>
             <p className="mt-1 text-xs text-slate-500">
               Sold by{' '}
-              <Link to={`/stores/${product.store_id}`} className="font-semibold text-emerald-700 hover:underline">
+              <Link to={`/stores/${product.store_id}`} className="font-semibold text-blue-700 hover:underline">
                 {product.store_name}
               </Link>{' '}
               · {product.store_city}
             </p>
             <p className="mt-3 text-2xl font-extrabold tabular-nums text-slate-900">{formatINR(product.price)}</p>
-            <p className={`mt-1 text-xs font-semibold ${outOfStock ? 'text-red-600' : 'text-emerald-700'}`}>
+            <p className={`mt-1 text-xs font-semibold ${outOfStock ? 'text-red-600' : 'text-blue-700'}`}>
               {outOfStock ? 'Out of stock right now' : `${product.stock} unit(s) available now`}
             </p>
             <p className="mt-3 text-sm leading-relaxed text-slate-600">{product.description}</p>

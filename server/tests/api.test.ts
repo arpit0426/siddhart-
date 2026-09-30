@@ -31,6 +31,7 @@ async function registerCustomer(prefix: string) {
     email,
     phone: '+91 98111 00000',
     password: 'TestPass123',
+    termsAccepted: true,
   });
   assert.equal(response.status, 201, JSON.stringify(response.body));
   return { client, email, user: response.body.user };
@@ -154,6 +155,7 @@ await suite.test('registration enforces the password policy and unique emails', 
     name: 'Duplicate One',
     email,
     password: 'TestPass123',
+    termsAccepted: true,
   });
   assert.equal(first.status, 201);
   const second = await server.client().post('/api/auth/register', {
@@ -161,6 +163,7 @@ await suite.test('registration enforces the password policy and unique emails', 
     name: 'Duplicate Two',
     email,
     password: 'TestPass123',
+    termsAccepted: true,
   });
   assert.equal(second.status, 409);
   assert.equal(second.body.code, 'email_taken');
@@ -472,6 +475,7 @@ await suite.test('full handoff lifecycle with role-scoped codes and status sync'
     name: 'Second Rider',
     email: uniqueEmail('rider2'),
     password: 'TestPass123',
+    termsAccepted: true,
   });
   await secondRiderClient.put('/api/rider/profile', {
     name: 'Second Rider',
@@ -557,6 +561,144 @@ await suite.test('repeated wrong handoff codes are rate-limited', async () => {
 
   const order = await demoCustomer.get(`/api/customer/orders/${orderId}`);
   assert.equal(order.body.order.status, 'ready_for_pickup', 'locked job must not advance');
+});
+
+/* -------------------------------------------------------------------------- */
+/* First-visit authentication: phone login, recovery, seller signup with store */
+/* -------------------------------------------------------------------------- */
+
+await suite.test('customers can sign in with their phone number instead of their email', async () => {
+  const client = server.client();
+  const response = await client.post('/api/auth/login', {
+    email: '+91 98765 43210',
+    password: 'NearBuy@2026',
+    expectedRole: 'customer',
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.body.user.email, 'customer.demo@nearbuy.app');
+});
+
+await suite.test('account recovery never reveals whether an account exists', async () => {
+  const client = server.client();
+  const known = await client.post('/api/auth/recover', { identifier: 'customer.demo@nearbuy.app' });
+  const unknown = await client.post('/api/auth/recover', { identifier: 'nobody.here@example.com' });
+  assert.equal(known.status, 200);
+  assert.equal(unknown.status, 200);
+  const message = 'If an account matches the information provided, recovery instructions will be sent.';
+  assert.equal(known.body.message, message);
+  assert.equal(unknown.body.message, message);
+  assert.ok(known.body.demoResetPath, 'demo mode exposes a controlled reset path for the demo flow');
+  assert.equal(unknown.body.demoResetPath, undefined, 'unknown identifiers must not get a reset path');
+});
+
+await suite.test('password reset tokens are single-use and revoke every session', async () => {
+  const client = server.client();
+  const requested = await client.post('/api/auth/recover', { identifier: 'customer.demo@nearbuy.app' });
+  const token = String(requested.body.demoResetPath).split('token=')[1];
+  assert.ok(token, 'demo reset path must contain a token');
+
+  // Unknown tokens are rejected with a generic error.
+  const badToken = await client.post('/api/auth/reset', { token: 'not-a-real-token', password: 'NewPass123' });
+  assert.equal(badToken.status, 400);
+  assert.equal(badToken.body.code, 'invalid_reset_token');
+
+  // A valid session exists before the reset.
+  await loginOk(client, 'customer.demo@nearbuy.app', 'NearBuy@2026', 'customer');
+  assert.equal((await client.get('/api/auth/me')).status, 200);
+
+  const reset = await client.post('/api/auth/reset', { token, password: 'NearBuy@2027' });
+  assert.equal(reset.status, 200, JSON.stringify(reset.body));
+  assert.equal(reset.body.message, 'Your password has been updated successfully.');
+
+  // Every existing session was revoked after the password change.
+  assert.equal((await client.get('/api/auth/me')).status, 401);
+
+  // Old password no longer works; the new one does.
+  const oldPassword = await client.post('/api/auth/login', {
+    email: 'customer.demo@nearbuy.app',
+    password: 'NearBuy@2026',
+  });
+  assert.equal(oldPassword.status, 401);
+  const newPassword = await client.post('/api/auth/login', {
+    email: 'customer.demo@nearbuy.app',
+    password: 'NearBuy@2027',
+  });
+  assert.equal(newPassword.status, 200);
+
+  // The token cannot be reused.
+  const reused = await client.post('/api/auth/reset', { token, password: 'AnotherPass1' });
+  assert.equal(reused.status, 400);
+  assert.equal(reused.body.code, 'invalid_reset_token');
+
+  // Restore the demo password so later suites see the documented credentials.
+  const restoreRequested = await client.post('/api/auth/recover', { identifier: 'customer.demo@nearbuy.app' });
+  const restoreToken = String(restoreRequested.body.demoResetPath).split('token=')[1];
+  const restore = await client.post('/api/auth/reset', { token: restoreToken, password: 'NearBuy@2026' });
+  assert.equal(restore.status, 200);
+  await loginOk(server.client(), 'customer.demo@nearbuy.app', 'NearBuy@2026', 'customer');
+});
+
+await suite.test('expired reset tokens are rejected with the same generic error', async () => {
+  const client = server.client();
+  const requested = await client.post('/api/auth/recover', { identifier: 'rider.demo@nearbuy.app' });
+  const token = String(requested.body.demoResetPath).split('token=')[1];
+
+  // Force-expire outstanding reset tokens directly in the database.
+  db.prepare(`UPDATE password_reset_tokens SET expires_at = ?`).run(
+    new Date(Date.now() - 60_000).toISOString()
+  );
+
+  const response = await client.post('/api/auth/reset', { token, password: 'AnotherPass1' });
+  assert.equal(response.status, 400);
+  assert.equal(response.body.code, 'invalid_reset_token');
+});
+
+await suite.test('seller signup creates the store in the same transaction', async () => {
+  const client = server.client();
+  const email = uniqueEmail('storefront');
+  const registered = await client.post('/api/auth/register', {
+    role: 'seller',
+    name: 'Storefront Seller',
+    email,
+    phone: '+91 98199 11223',
+    password: 'TestPass123',
+    store: {
+      name: 'Green Basket Bazaar',
+      category: 'Grocery',
+      address: 'Shop 3, Community Centre, Sector 9',
+      city: 'Dwarka, New Delhi',
+      state: 'Delhi',
+      pincode: '110077',
+      opensAt: '08:00',
+      closesAt: '21:00',
+      operatingDays: 'Mon-Sat',
+    },
+  });
+  assert.equal(registered.status, 201, JSON.stringify(registered.body));
+  assert.equal(registered.body.user.role, 'seller');
+
+  // The store exists, belongs to this seller only, and is published + open.
+  const store = await client.get('/api/seller/store');
+  assert.equal(store.status, 200);
+  assert.equal(store.body.store.name, 'Green Basket Bazaar');
+  assert.equal(store.body.store.status, 'open');
+  assert.ok(store.body.store.published_at, 'store must be published at signup');
+
+  // Discovery immediately lists the published store.
+  const discovery = await server.client().get('/api/customer/stores?query=Green%20Basket');
+  assert.ok(discovery.body.stores.some((row: any) => row.name === 'Green Basket Bazaar'));
+});
+
+await suite.test('customer signup requires the terms acceptance', async () => {
+  const client = server.client();
+  const response = await client.post('/api/auth/register', {
+    role: 'customer',
+    name: 'Terms Refuser',
+    email: uniqueEmail('terms'),
+    password: 'TestPass123',
+  });
+  assert.equal(response.status, 400);
+  assert.equal(response.body.code, 'terms_required');
 });
 
 /* -------------------------------------------------------------------------- */
