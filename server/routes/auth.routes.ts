@@ -1,172 +1,173 @@
 import { Router } from 'express';
-import crypto from 'node:crypto';
-import { db } from '../db.js';
-import { hashPassword, verifyPassword, createSession, deleteSession, requireAuth, AuthenticatedRequest } from '../auth.js';
-import { seedDemoData } from '../seed.js';
+import { db, withTransaction } from '../db.js';
+import { config, validatePasswordStrength } from '../config.js';
+import { logger } from '../logging.js';
+import { rateLimit } from '../rateLimit.js';
+import { clearSessionCookie, setSessionCookie } from '../security.js';
+import { ApiError, route } from '../http.js';
+import {
+  AuthenticatedRequest,
+  assertAccountNotLocked,
+  extractToken,
+  createSession,
+  deleteSession,
+  getUserByToken,
+  hashPassword,
+  publicUser,
+  registerFailedLogin,
+  registerSuccessfulLogin,
+  requireAuth,
+  verifyPassword,
+} from '../auth.js';
+import { optionalPhone, requireEmail, requireEnum, requireString } from '../validation.js';
+import { randomId } from '../codes.js';
 
 export const authRouter = Router();
 
-// Demo accounts metadata for staging convenience
-const DEMO_ACCOUNTS = [
-  { role: 'customer', name: 'Aarav Sharma', email: 'customer.demo@nearbuy.app', password: 'NearBuy@2026' },
-  { role: 'seller', name: 'Rahul Verma', email: 'seller.demo@nearbuy.app', password: 'NearBuy@2026' },
-  { role: 'rider', name: 'Arjun Kumar', email: 'rider.demo@nearbuy.app', password: 'NearBuy@2026' }
-];
+const ROLES = ['customer', 'seller', 'rider'] as const;
 
-// Public: Get demo accounts info for quick switch/demo banner
-authRouter.get('/demo-accounts', (_req, res) => {
-  res.json({ accounts: DEMO_ACCOUNTS });
-});
-
-// Quick Demo Login: Authenticates one of the 3 demo users directly
-authRouter.post('/demo-login', (req, res) => {
-  const { role } = req.body;
-  const demoAccount = DEMO_ACCOUNTS.find(a => a.role === role);
-  if (!demoAccount) {
-    res.status(400).json({ error: `Invalid demo role '${role}'` });
-    return;
-  }
-
-  // Ensure demo data is seeded
-  let user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(demoAccount.email) as any;
-  if (!user) {
-    seedDemoData();
-    user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(demoAccount.email) as any;
-  }
-
-  const token = createSession(user.id, user.role);
-
+/**
+ * Public runtime configuration for the SPA (never secrets).
+ * Demo credentials are only exposed when demo mode is enabled.
+ */
+authRouter.get('/config', (_req, res) => {
   res.json({
-    token,
-    user: {
-      id: user.id,
-      role: user.role,
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-      status: user.status
-    }
+    appName: config.appName,
+    version: config.version,
+    demoMode: config.demoMode,
+    deliveryFeePerStore: config.deliveryFeePerStore,
+    freeDeliveryThreshold: config.freeDeliveryThreshold,
+    demoAccounts: config.demoMode
+      ? [
+          { role: 'customer', name: 'Aarav Sharma', email: 'customer.demo@nearbuy.app', password: 'NearBuy@2026' },
+          { role: 'seller', name: 'Rahul Verma', email: 'seller.demo@nearbuy.app', password: 'NearBuy@2026' },
+          { role: 'rider', name: 'Arjun Kumar', email: 'rider.demo@nearbuy.app', password: 'NearBuy@2026' },
+        ]
+      : [],
   });
 });
 
-// Register
-authRouter.post('/register', (req, res) => {
-  const { role, name, email, phone, password } = req.body;
+// Registration: /api/auth/register  { role, name, email, phone, password }
+authRouter.post(
+  '/register',
+  rateLimit({ windowMs: 60 * 60 * 1000, max: 20, keyPrefix: 'register' }),
+  route((req, res) => {
+    const role = requireEnum(req.body?.role, 'Account type', ROLES);
+    const name = requireString(req.body?.name, 'Full name', { min: 2, max: 80 });
+    const email = requireEmail(req.body?.email);
+    const phone = optionalPhone(req.body?.phone);
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
-  if (!role || !['customer', 'seller', 'rider'].includes(role)) {
-    res.status(400).json({ error: 'Valid role is required (customer, seller, rider)' });
-    return;
-  }
-  if (!name || name.trim().length < 2) {
-    res.status(400).json({ error: 'Full name is required (min 2 characters)' });
-    return;
-  }
-  if (!email || !email.includes('@')) {
-    res.status(400).json({ error: 'Valid email address is required' });
-    return;
-  }
-  if (!password || password.length < 6) {
-    res.status(400).json({ error: 'Password must be at least 6 characters' });
-    return;
-  }
+    const policyError = validatePasswordStrength(password);
+    if (policyError) throw ApiError.badRequest(policyError, 'weak_password');
 
-  const normalizedEmail = email.trim().toLowerCase();
-
-  const existing = db.prepare(`SELECT id FROM users WHERE email = ?`).get(normalizedEmail);
-  if (existing) {
-    res.status(409).json({ error: 'An account with this email already exists' });
-    return;
-  }
-
-  const id = `usr_${role}_${crypto.randomUUID().slice(0, 8)}`;
-  const { hash, salt } = hashPassword(password);
-  const now = new Date().toISOString();
-
-  db.prepare(`
-    INSERT INTO users (id, role, name, email, phone, password_hash, password_salt, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-  `).run(id, role, name.trim(), normalizedEmail, phone || '', hash, salt, now, now);
-
-  // If customer, initialize cart
-  if (role === 'customer') {
-    db.prepare(`
-      INSERT INTO carts (id, customer_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?)
-    `).run(`cart_${crypto.randomUUID().slice(0, 8)}`, id, now, now);
-  }
-
-  const token = createSession(id, role);
-
-  res.status(201).json({
-    token,
-    user: {
-      id,
-      role,
-      name: name.trim(),
-      email: normalizedEmail,
-      phone: phone || null,
-      status: 'active'
+    const existing = db.prepare(`SELECT id FROM users WHERE email = ?`).get(email);
+    if (existing) {
+      throw ApiError.conflict('An account with this email address already exists. Please sign in instead.', 'email_taken');
     }
-  });
-});
 
-// Login
-authRouter.post('/login', (req, res) => {
-  const { email, password, expectedRole } = req.body;
+    const id = randomId(`usr_${role}`);
+    const { hash, salt } = hashPassword(password);
+    const now = new Date().toISOString();
 
-  if (!email || !password) {
-    res.status(400).json({ error: 'Email and password are required' });
-    return;
-  }
+    withTransaction(() => {
+      db.prepare(
+        `INSERT INTO users (id, role, name, email, phone, password_hash, password_salt, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`
+      ).run(id, role, name, email, phone || null, hash, salt, now, now);
 
-  const normalizedEmail = email.trim().toLowerCase();
-  const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(normalizedEmail) as any;
-
-  if (!user) {
-    res.status(401).json({ error: 'Invalid email or password' });
-    return;
-  }
-
-  const valid = verifyPassword(password, user.password_hash, user.password_salt);
-  if (!valid) {
-    res.status(401).json({ error: 'Invalid email or password' });
-    return;
-  }
-
-  // Check expected role if specified
-  if (expectedRole && user.role !== expectedRole) {
-    res.status(403).json({
-      error: `This account is registered as a ${user.role}. Please sign in via the ${user.role} portal.`
+      if (role === 'customer') {
+        db.prepare(
+          `INSERT INTO carts (id, customer_id, created_at, updated_at) VALUES (?, ?, ?, ?)`
+        ).run(randomId('cart'), id, now, now);
+      }
     });
-    return;
-  }
 
-  const token = createSession(user.id, user.role);
+    const session = createSession(id, role, { userAgent: req.headers['user-agent'] });
+    setSessionCookie(res, session.token, session.expiresAt);
+    logger.info('auth.registered', { userId: id, role });
 
-  res.json({
-    token,
-    user: {
-      id: user.id,
-      role: user.role,
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-      status: user.status
+    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id);
+    res.status(201).json({ token: session.token, user: publicUser(user) });
+  })
+);
+
+// Login: /api/auth/login { email, password, expectedRole? }
+authRouter.post(
+  '/login',
+  rateLimit({ windowMs: 15 * 60 * 1000, max: 25, keyPrefix: 'login' }),
+  route((req, res) => {
+    const email = requireEmail(req.body?.email);
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const expectedRole = req.body?.expectedRole
+      ? requireEnum(req.body.expectedRole, 'Portal', ROLES)
+      : undefined;
+
+    if (!password) throw ApiError.badRequest('Password is required.');
+
+    const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email) as any;
+
+    // Generic error message: never reveal whether an email is registered.
+    if (!user) {
+      logger.warn('auth.login_failed', { email, reason: 'unknown_account' });
+      throw new ApiError(401, 'Incorrect email or password.', 'invalid_credentials');
     }
-  });
-});
 
-// Logout
-authRouter.post('/logout', (req: AuthenticatedRequest, res) => {
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7).trim();
-    deleteSession(token);
-  }
-  res.json({ message: 'Signed out successfully' });
-});
+    assertAccountNotLocked(user);
 
-// Current User Profile
-authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
-  res.json({ user: req.user });
-});
+    if (!verifyPassword(password, user.password_hash, user.password_salt)) {
+      registerFailedLogin(user.id);
+      logger.warn('auth.login_failed', { userId: user.id, reason: 'bad_password' });
+      throw new ApiError(401, 'Incorrect email or password.', 'invalid_credentials');
+    }
+
+    if (user.status !== 'active') {
+      throw ApiError.forbidden('This account is not active. Please contact support.');
+    }
+
+    if (expectedRole && user.role !== expectedRole) {
+      throw ApiError.forbidden(
+        `This account is registered as a ${user.role}. Please sign in through the ${user.role} portal.`
+      );
+    }
+
+    registerSuccessfulLogin(user.id);
+    const session = createSession(user.id, user.role, { userAgent: req.headers['user-agent'] });
+    setSessionCookie(res, session.token, session.expiresAt);
+    logger.info('auth.login', { userId: user.id, role: user.role });
+
+    const fresh = db.prepare(`SELECT * FROM users WHERE id = ?`).get(user.id);
+    res.json({ token: session.token, user: publicUser(fresh) });
+  })
+);
+
+authRouter.post(
+  '/logout',
+  route((req, res) => {
+    // Revoke whichever credential was presented (Bearer token and/or cookie).
+    const token = extractToken(req);
+    if (token) deleteSession(token);
+    clearSessionCookie(res);
+    res.json({ message: 'Signed out successfully.' });
+  })
+);
+
+authRouter.get(
+  '/me',
+  requireAuth,
+  route((req: AuthenticatedRequest, res) => {
+    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user!.id);
+    if (!user) throw ApiError.unauthorized();
+    res.json({ user: publicUser(user) });
+  })
+);
+
+// Session validity probe used by the SPA router guards.
+authRouter.get(
+  '/session',
+  route((req, res) => {
+    const token = extractToken(req);
+    const user = token ? getUserByToken(token) : null;
+    res.json({ authenticated: Boolean(user), user: user ? publicUser(user) : null });
+  })
+);
