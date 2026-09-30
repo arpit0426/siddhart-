@@ -1,3 +1,4 @@
+import { resetSavedCache } from '../../lib/saved';
 import React, { useEffect, useState } from 'react';
 import {
   Bell,
@@ -242,6 +243,7 @@ export const AppShell: React.FC<{ children: React.ReactNode; cartCount?: number 
                       type="button"
                       role="menuitem"
                       onClick={async () => {
+                        resetSavedCache();
                         await logout();
                         navigate('/');
                       }}

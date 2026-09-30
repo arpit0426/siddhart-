@@ -33,6 +33,7 @@ import {
   SellerOrderDetailPage,
   SellerOrdersPage,
   SellerPerformancePage,
+  SellerEarningsPage,
   SellerProductsPage,
   SellerRequestsPage,
   SellerStorePage,
@@ -291,6 +292,16 @@ function resolveRoute(path: string): RouteMatch {
       element: (
         <RequireRole role="seller">
           <SellerStorePage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/seller/earnings') {
+    return {
+      key: 'seller-earnings',
+      element: (
+        <RequireRole role="seller">
+          <SellerEarningsPage />
         </RequireRole>
       ),
     };

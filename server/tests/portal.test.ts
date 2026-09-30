@@ -301,5 +301,38 @@ await suite.test('customer discovery endpoints return backend-filtered, paginate
   assert.equal((await server.client().get('/api/customer/stores')).status, 401);
 });
 
+await suite.test('seller earnings, store preview, settings and profile save stay consistent', async () => {
+  const earnings = await seller.get('/api/seller/earnings');
+  assert.equal(earnings.status, 200, JSON.stringify(earnings.body));
+  assert.ok(earnings.body.summary.gross > 0, 'delivered orders from earlier tests count as gross');
+  const { gross, platformFee, net } = earnings.body.summary;
+  assert.ok(Math.abs(gross - platformFee - net) < 0.02);
+  assert.ok(earnings.body.recent.length > 0);
+  assert.equal((await customer.get('/api/seller/earnings')).status, 403);
+
+  const preview = await seller.get('/api/seller/store/preview');
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.ok(preview.body.products.length > 0);
+  assert.equal(preview.body.visibleToCustomers, true);
+
+  const settings = await seller.put('/api/seller/store/settings', { fulfilmentMinMinutes: 20, fulfilmentMaxMinutes: 10 });
+  assert.equal(settings.status, 400);
+  const ok = await seller.put('/api/seller/store/settings', { fulfilmentMinMinutes: 15, fulfilmentMaxMinutes: 40, supportPhone: '+91 98111 22334' });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+
+  // Closing the store, then re-saving the profile without a status, must not reopen it.
+  const closed = await seller.put('/api/seller/store/status', { status: 'closed', message: 'Back soon' });
+  assert.equal(closed.status, 200);
+  const current = (await seller.get('/api/seller/store')).body.store;
+  const resave = await seller.post('/api/seller/store', {
+    name: current.name, description: current.description, category: current.category, address: current.address,
+    city: current.city, state: current.state, pincode: current.pincode,
+  });
+  assert.equal(resave.status, 200, JSON.stringify(resave.body));
+  assert.equal(resave.body.store.status, 'closed');
+  const reopened = await seller.put('/api/seller/store/status', { status: 'open' });
+  assert.equal(reopened.body.store.status, 'open');
+});
+
 suite.summary();
 await server.close();

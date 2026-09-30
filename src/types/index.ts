@@ -61,6 +61,9 @@ export interface Store {
   fulfilment_min_minutes?: number | null;
   fulfilment_max_minutes?: number | null;
   logo?: string | null;
+  legal_name?: string | null;
+  business_email?: string | null;
+  support_phone?: string | null;
 }
 
 export interface Product {
@@ -114,6 +117,10 @@ export interface CartItem {
   supports_pickup: number;
   lineTotal: number;
   issue: string | null;
+  unit?: string | null;
+  availabilityState?: 'in_stock' | 'low' | 'out_of_stock';
+  priceChanged?: { from: number; to: number } | null;
+  warning?: string | null;
 }
 
 export interface CartStoreGroup {
@@ -125,6 +132,8 @@ export interface CartStoreGroup {
   items: CartItem[];
   subtotal: number;
   deliveryFee: number;
+  storeClosed?: boolean;
+  blocked?: boolean;
 }
 
 export interface CartResponse {
@@ -132,6 +141,8 @@ export interface CartResponse {
   items: CartItem[];
   stores: CartStoreGroup[];
   subtotal: number;
+  deliveryFee?: number;
+  total?: number;
 }
 
 export interface CustomerAddress {
@@ -146,6 +157,10 @@ export interface CustomerAddress {
   pincode: string;
   is_default: number;
   created_at?: string;
+  area?: string | null;
+  instructions?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export type OrderStatus =
@@ -203,7 +218,7 @@ export interface Order {
   /** Seller-only secret, revealed once the order is packed/ready. */
   pickupCode?: string | null;
   customer?: { name: string; phone: string | null } | null;
-  rider?: { name: string; phone: string | null; status?: string } | null;
+  rider?: { name: string; phone?: string | null; status?: string } | null;
   jobStatus?: string | null;
 }
 

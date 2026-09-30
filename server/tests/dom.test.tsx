@@ -167,6 +167,7 @@ const stubFetch = async (input: any, init?: any) => {
         timeline: [{ event_type: 'ORDER_PLACED', actor_role: 'customer', note: 'Order placed', created_at: now }],
         store: { id: store.id, name: store.name, address: store.address, city: store.city, phone: '+91 98111 00000' },
         deliveryCode: 'DL-4321',
+        deliveryCodeState: 'available',
         rider: { name: 'Arjun Kumar', phone: '+91 98111 22222', status: 'out_for_delivery' },
         jobStatus: 'out_for_delivery',
       },

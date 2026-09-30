@@ -110,12 +110,13 @@ sellerRouter.post(
     const image = optionalString(req.body?.image, 'Store image', { max: 500 });
     const supportsDelivery = req.body?.supportsDelivery === false ? 0 : 1;
     const supportsPickup = req.body?.supportsPickup === false ? 0 : 1;
+    const existing = getSellerStore(sellerId);
+    // Saving the profile must never silently reopen a closed or hidden store.
     const status = req.body?.status
       ? requireEnum(req.body.status, 'Store status', STORE_STATUSES)
-      : 'open';
+      : existing?.status ?? 'open';
     const openingHours = `${opensAt} - ${closesAt} (${operatingDays})`;
 
-    const existing = getSellerStore(sellerId);
     const now = new Date().toISOString();
 
     if (existing) {
