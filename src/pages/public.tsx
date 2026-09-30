@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Bike,
   Clock,
+  Heart,
   MapPin,
   PackageSearch,
   Search,
@@ -16,6 +17,8 @@ import { useAuth } from '../context/AuthContext';
 import { useCart } from '../context/CartContext';
 import { useToast } from '../context/ToastContext';
 import { formatINR } from '../lib/format';
+import { locationParams, useBrowseLocation } from '../lib/location';
+import { useSaved } from '../lib/saved';
 import type { Product, Store } from '../types';
 import {
   Badge,
@@ -64,6 +67,9 @@ export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products', basePa
   const [addingId, setAddingId] = useState<string | null>(null);
 
   const debouncedSearch = useDebouncedValue(searchInput, 300);
+  const browseLocation = useBrowseLocation();
+  const geo = locationParams(browseLocation);
+  const geoKey = `${geo.lat ?? ''},${geo.lng ?? ''}`;
 
   const categoriesResource = useApiResource(
     () => api.get<{ categories: { category: string; count: number }[] }>('/api/customer/categories'),
@@ -76,9 +82,10 @@ export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products', basePa
         `/api/customer/stores?${new URLSearchParams({
           ...(debouncedSearch ? { query: debouncedSearch } : {}),
           ...(category ? { category } : {}),
+          ...geo,
         }).toString()}`
       ),
-    [debouncedSearch, category]
+    [debouncedSearch, category, geoKey]
   );
 
   const productsResource = useApiResource(
@@ -90,10 +97,11 @@ export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products', basePa
           ...(storeFilter ? { storeId: storeFilter } : {}),
           ...(maxPrice ? { maxPrice } : {}),
           ...(inStockOnly ? { inStockOnly: 'true' } : {}),
+          ...geo,
           sort,
         }).toString()}`
       ),
-    [debouncedSearch, category, storeFilter, maxPrice, inStockOnly, sort]
+    [debouncedSearch, category, storeFilter, maxPrice, inStockOnly, sort, geoKey]
   );
 
   useEffect(() => {
@@ -126,7 +134,7 @@ export const DiscoverPage: React.FC<DiscoverProps> = ({ tab = 'products', basePa
 
   const handleAdd = async (product: Product) => {
     if (!user) {
-      navigate(`/customer/auth?next=${encodeURIComponent('/discover')}`);
+      navigate(`/customer/auth?next=${encodeURIComponent('/customer')}`);
       return;
     }
     if (user.role !== 'customer') {
@@ -321,10 +329,26 @@ export const ProductCard: React.FC<{
   adding?: boolean;
   onAdd: () => void;
 }> = ({ product, quantityInCart, adding, onAdd }) => {
-  const outOfStock = (product.stock ?? 0) <= 0;
+  const outOfStock = product.availabilityState
+    ? product.availabilityState === 'out_of_stock'
+    : (product.stock ?? 0) <= 0;
+  const { isSaved, toggle } = useSaved();
+  const toast = useToast();
+  const saved = isSaved(product.id);
 
   return (
-    <Card className="flex flex-col overflow-hidden">
+    <Card className="relative flex flex-col overflow-hidden">
+      <button
+        type="button"
+        aria-label={saved ? `Remove ${product.name} from saved items` : `Save ${product.name}`}
+        aria-pressed={saved}
+        onClick={() =>
+          toggle(product.id).catch((error) => toast.push({ title: errorMessage(error), tone: 'error' }))
+        }
+        className="absolute left-2 top-2 z-10 rounded-full bg-white/95 p-1.5 shadow-sm hover:bg-white"
+      >
+        <Heart className={`h-4 w-4 ${saved ? 'fill-red-500 text-red-500' : 'text-slate-500'}`} aria-hidden="true" />
+      </button>
       <Link to={`/products/${product.id}`} className="block">
         <div className="relative aspect-[4/3] bg-slate-100">
           {product.image ? (
@@ -344,7 +368,7 @@ export const ProductCard: React.FC<{
               <span className="rounded bg-red-600 px-2 py-1 text-[11px] font-bold text-white">Out of stock</span>
             </div>
           )}
-          <span className="absolute right-2 top-2 rounded bg-white/95 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+          <span className="absolute bottom-2 right-2 max-w-[70%] truncate rounded bg-white/95 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
             {product.store_name}
           </span>
         </div>
@@ -354,12 +378,24 @@ export const ProductCard: React.FC<{
         <Link to={`/products/${product.id}`} className="mt-0.5 text-sm font-bold text-slate-900 hover:text-blue-700">
           {product.name}
         </Link>
+        {(product.brand || product.unit) && (
+          <p className="mt-0.5 text-[11px] text-slate-500">{[product.brand, product.unit].filter(Boolean).join(' · ')}</p>
+        )}
         <p className="mt-1 line-clamp-2 text-xs text-slate-500">{product.description}</p>
         <div className="mt-auto pt-3">
           <div className="flex items-center justify-between">
-            <span className="text-base font-extrabold tabular-nums text-slate-900">{formatINR(product.price)}</span>
-            <span className={`text-[11px] font-medium ${outOfStock ? 'text-red-600' : 'text-blue-700'}`}>
-              {outOfStock ? 'Unavailable' : `${product.stock} in stock`}
+            <span className="text-base font-extrabold tabular-nums text-slate-900">
+              {formatINR(product.price)}
+              {product.mrp && product.mrp > product.price && (
+                <span className="ml-1.5 text-[11px] font-medium text-slate-400 line-through">{formatINR(product.mrp)}</span>
+              )}
+            </span>
+            <span
+              className={`text-[11px] font-medium ${
+                outOfStock ? 'text-red-600' : product.availabilityState === 'low' ? 'text-amber-600' : 'text-blue-700'
+              }`}
+            >
+              {product.availabilityLabel ?? (outOfStock ? 'Unavailable' : `${product.stock} in stock`)}
             </span>
           </div>
           <Button
@@ -396,7 +432,7 @@ export const StoreCard: React.FC<{ store: Store }> = ({ store }) => (
           {store.name}
         </Link>
         <Badge tone={store.status === 'open' ? 'success' : 'neutral'}>
-          {store.status === 'open' ? 'Open now' : 'Closed'}
+          {store.statusLabel ?? (store.status === 'open' ? 'Open now' : 'Closed')}
         </Badge>
       </div>
       <p className="mt-1 line-clamp-2 text-xs text-slate-500">{store.description}</p>
@@ -432,10 +468,33 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
   const { cart, updateItem } = useCart();
   const toast = useToast();
   const [addingId, setAddingId] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [more, setMore] = useState<Product[]>([]);
+  const [page, setPage] = useState(1);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const location = useBrowseLocation();
+  const geo = locationParams(location);
   const resource = useApiResource(
-    () => api.get<{ store: Store; products: Product[] }>(`/api/customer/stores/${storeId}`),
-    [storeId]
+    () =>
+      api.get<{
+        store: Store;
+        products: Product[];
+        total: number;
+        hasMore: boolean;
+        categories: { category: string; count: number }[];
+      }>(
+        `/api/customer/stores/${storeId}?${new URLSearchParams({
+          ...(categoryFilter ? { category: categoryFilter } : {}),
+          ...geo,
+        }).toString()}`
+      ),
+    [storeId, categoryFilter, geo.lat, geo.lng]
   );
+
+  useEffect(() => {
+    setMore([]);
+    setPage(1);
+  }, [storeId, categoryFilter]);
 
   const cartQuantities = useMemo(() => {
     const map = new Map<string, number>();
@@ -447,7 +506,27 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
   if (resource.error) return <ErrorNote>{resource.error}</ErrorNote>;
   if (!resource.data) return null;
 
-  const { store, products } = resource.data;
+  const { store, total, categories } = resource.data;
+  const products = [...resource.data.products, ...more];
+  const hasMore = products.length < total;
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const next = await api.get<{ products: Product[] }>(
+        `/api/customer/stores/${storeId}?${new URLSearchParams({
+          page: String(page + 1),
+          ...(categoryFilter ? { category: categoryFilter } : {}),
+        }).toString()}`
+      );
+      setMore((current) => [...current, ...next.products]);
+      setPage((value) => value + 1);
+    } catch (error) {
+      toast.push({ title: 'Could not load more', description: errorMessage(error), tone: 'error' });
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const add = async (product: Product) => {
     if (!user) {
@@ -468,7 +547,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
   return (
     <div className="space-y-6">
       <nav aria-label="Breadcrumb" className="text-xs text-slate-500">
-        <Link to="/discover" className="hover:text-slate-800">
+        <Link to="/customer" className="hover:text-slate-800">
           Discover
         </Link>
         <span className="mx-1.5">/</span>
@@ -494,10 +573,17 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl font-bold text-slate-900">{store.name}</h1>
               <Badge tone={store.status === 'open' ? 'success' : 'neutral'}>
-                {store.status === 'open' ? 'Open now' : 'Closed'}
+                {store.statusLabel ?? (store.status === 'open' ? 'Open now' : 'Closed')}
               </Badge>
               <Badge tone="info">{store.category}</Badge>
+              {store.distanceKm != null && <Badge tone="neutral">{store.distanceKm} km away</Badge>}
             </div>
+            {store.status !== 'open' && (
+              <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800" role="status">
+                {store.status_message || 'This store is not taking new orders right now.'} You can still browse, but
+                checkout is unavailable until it reopens.
+              </p>
+            )}
             <p className="mt-2 text-xs leading-relaxed text-slate-600">{store.description}</p>
             <dl className="mt-3 grid gap-1.5 text-xs text-slate-600 sm:grid-cols-2">
               <div className="flex items-start gap-1.5">
@@ -511,6 +597,11 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
                 <span>{store.opening_hours}</span>
               </div>
             </dl>
+            {store.fulfilmentMinutes && (
+              <p className="mt-2 text-xs text-slate-600">
+                Usually ready in {store.fulfilmentMinutes.min}–{store.fulfilmentMinutes.max} min
+              </p>
+            )}
             <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
               {store.supports_delivery ? (
                 <Badge tone="success">Home delivery · ₹30 flat</Badge>
@@ -524,7 +615,26 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
         </div>
       </Card>
 
-      <SectionHeader title={`Available products (${products.length})`} subtitle="Stock updates live as the store sells and restocks." />
+      <SectionHeader title={`Products (${total})`} subtitle="Stock updates live as the store sells and restocks." />
+      {categories.length > 1 && (
+        <div className="-mt-2 flex gap-2 overflow-x-auto pb-1" role="group" aria-label="Filter by category">
+          {[{ category: '', count: total }, ...categories].map((row) => (
+            <button
+              key={row.category || 'all'}
+              type="button"
+              aria-pressed={categoryFilter === row.category}
+              onClick={() => setCategoryFilter(row.category)}
+              className={`shrink-0 rounded-full border px-3 py-1 text-xs font-semibold ${
+                categoryFilter === row.category
+                  ? 'border-blue-600 bg-blue-50 text-blue-800'
+                  : 'border-slate-200 bg-white text-slate-600'
+              }`}
+            >
+              {row.category || 'All'} ({row.count})
+            </button>
+          ))}
+        </div>
+      )}
       {products.length === 0 ? (
         <EmptyState title="This store has not published products yet" description="Check back shortly." />
       ) : (
@@ -538,6 +648,13 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
               onAdd={() => add(product)}
             />
           ))}
+        </div>
+      )}
+      {hasMore && (
+        <div className="text-center">
+          <Button variant="secondary" loading={loadingMore} onClick={loadMore}>
+            Load more products
+          </Button>
         </div>
       )}
     </div>
@@ -559,16 +676,23 @@ export const ProductDetailPage: React.FC<{ productId: string }> = ({ productId }
   const [note, setNote] = useState('');
 
   const resource = useApiResource(
-    () => api.get<{ product: Product }>(`/api/customer/products/${productId}`),
+    () =>
+      api.get<{ product: Product; latestStockRequest?: { status: string; requested_quantity: number } | null }>(
+        `/api/customer/products/${productId}`
+      ),
     [productId]
   );
+  const { isSaved, toggle } = useSaved();
 
   if (resource.loading) return <Spinner label="Loading product…" />;
   if (resource.error) return <ErrorNote>{resource.error}</ErrorNote>;
   if (!resource.data) return null;
 
   const product = resource.data.product;
-  const outOfStock = (product.stock ?? 0) <= 0;
+  const outOfStock = product.availabilityState
+    ? product.availabilityState === 'out_of_stock'
+    : (product.stock ?? 0) <= 0;
+  const storeClosed = product.store_status !== undefined && product.store_status !== 'open';
   const inCart = (cart?.items ?? []).find((item) => item.product_id === product.id)?.quantity ?? 0;
 
   const requireCustomer = () => {
@@ -619,7 +743,7 @@ export const ProductDetailPage: React.FC<{ productId: string }> = ({ productId }
   return (
     <div className="space-y-6">
       <nav aria-label="Breadcrumb" className="text-xs text-slate-500">
-        <Link to="/discover" className="hover:text-slate-800">
+        <Link to="/customer" className="hover:text-slate-800">
           Discover
         </Link>
         <span className="mx-1.5">/</span>
@@ -646,7 +770,26 @@ export const ProductDetailPage: React.FC<{ productId: string }> = ({ productId }
         <div className="space-y-4">
           <Card className="p-5">
             <Badge tone="info">{product.category}</Badge>
-            <h1 className="mt-2 text-xl font-bold text-slate-900">{product.name}</h1>
+            <div className="mt-2 flex items-start justify-between gap-2">
+              <h1 className="text-xl font-bold text-slate-900">{product.name}</h1>
+              <button
+                type="button"
+                aria-pressed={isSaved(product.id)}
+                aria-label={isSaved(product.id) ? 'Remove from saved items' : 'Save for later'}
+                onClick={() =>
+                  toggle(product.id).catch((error) => toast.push({ title: errorMessage(error), tone: 'error' }))
+                }
+                className="rounded-full border border-slate-200 p-2 hover:bg-slate-50"
+              >
+                <Heart
+                  className={`h-4 w-4 ${isSaved(product.id) ? 'fill-red-500 text-red-500' : 'text-slate-500'}`}
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
+            {(product.brand || product.unit) && (
+              <p className="mt-0.5 text-xs text-slate-500">{[product.brand, product.unit].filter(Boolean).join(' · ')}</p>
+            )}
             <p className="mt-1 text-xs text-slate-500">
               Sold by{' '}
               <Link to={`/stores/${product.store_id}`} className="font-semibold text-blue-700 hover:underline">
@@ -654,11 +797,28 @@ export const ProductDetailPage: React.FC<{ productId: string }> = ({ productId }
               </Link>{' '}
               · {product.store_city}
             </p>
-            <p className="mt-3 text-2xl font-extrabold tabular-nums text-slate-900">{formatINR(product.price)}</p>
-            <p className={`mt-1 text-xs font-semibold ${outOfStock ? 'text-red-600' : 'text-blue-700'}`}>
-              {outOfStock ? 'Out of stock right now' : `${product.stock} unit(s) available now`}
+            <p className="mt-3 text-2xl font-extrabold tabular-nums text-slate-900">
+              {formatINR(product.price)}
+              {product.mrp && product.mrp > product.price && (
+                <span className="ml-2 text-sm font-medium text-slate-400 line-through">{formatINR(product.mrp)}</span>
+              )}
             </p>
+            <p
+              className={`mt-1 text-xs font-semibold ${
+                outOfStock ? 'text-red-600' : product.availabilityState === 'low' ? 'text-amber-600' : 'text-blue-700'
+              }`}
+            >
+              {outOfStock
+                ? 'Out of stock right now'
+                : `${product.availabilityLabel ?? 'In stock'} · ${product.stock} unit(s) available`}
+            </p>
+            {storeClosed && (
+              <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800" role="status">
+                {product.store_name} is closed right now. You can save this item and order when it reopens.
+              </p>
+            )}
             <p className="mt-3 text-sm leading-relaxed text-slate-600">{product.description}</p>
+            {product.product_info && <p className="mt-2 text-xs leading-relaxed text-slate-500">{product.product_info}</p>}
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
               <QuantityStepper
@@ -669,7 +829,7 @@ export const ProductDetailPage: React.FC<{ productId: string }> = ({ productId }
                 label={`quantity for ${product.name}`}
                 disabled={outOfStock}
               />
-              <Button onClick={addToCart} disabled={outOfStock} loading={busy}>
+              <Button onClick={addToCart} disabled={outOfStock || storeClosed} loading={busy}>
                 <ShoppingBag className="h-4 w-4" aria-hidden="true" />
                 {inCart > 0 ? `Update cart (${inCart} in cart)` : 'Add to cart'}
               </Button>
@@ -759,6 +919,6 @@ export const NotFoundPage: React.FC = () => (
     icon={<PackageSearch className="h-8 w-8" aria-hidden="true" />}
     title="Page not found"
     description="The page you were looking for does not exist or has moved."
-    action={<Button onClick={() => navigate('/discover')}>Back to discovery</Button>}
+    action={<Button onClick={() => navigate('/customer')}>Back to home</Button>}
   />
 );

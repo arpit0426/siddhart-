@@ -138,11 +138,11 @@ export const AuthLayout: React.FC<{ children: React.ReactNode; wide?: boolean }>
           <NearBuyWordmark size={36} tagline />
         </Link>
         <Link
-          to="/discover"
+          to="/customer/auth"
           className="hidden items-center gap-1.5 rounded-lg border border-slate-200 bg-white/80 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:border-blue-300 hover:text-blue-700 sm:inline-flex"
         >
           <ShoppingBag className="h-3.5 w-3.5" aria-hidden="true" />
-          Browse stores first
+          Shop as a customer
         </Link>
       </div>
     </header>

@@ -46,7 +46,7 @@ export function verifyPassword(password: string, hash: string, salt: string): bo
 /* Sessions: only SHA-256 hashes of tokens are persisted                       */
 /* -------------------------------------------------------------------------- */
 
-function hashToken(token: string): string {
+export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
@@ -338,4 +338,48 @@ export function publicUser(user: any) {
     onboardingCompleted: Boolean(user.onboarding_completed),
     createdAt: user.created_at,
   };
+}
+
+export interface SessionInfo {
+  id: string;
+  userAgent: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  current: boolean;
+}
+
+/** Sessions are identified by a short, non-reversible prefix of the stored hash. */
+export function listSessions(userId: string, currentToken: string | null): SessionInfo[] {
+  const currentHash = currentToken ? hashToken(currentToken) : null;
+  const rows = db
+    .prepare(
+      `SELECT token_hash, user_agent, created_at, last_seen_at, expires_at FROM sessions
+       WHERE user_id = ? AND expires_at > ? ORDER BY last_seen_at DESC`
+    )
+    .all(userId, new Date().toISOString()) as any[];
+  return rows.map((row) => ({
+    id: String(row.token_hash).slice(0, 16),
+    userAgent: row.user_agent,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+    expiresAt: row.expires_at,
+    current: row.token_hash === currentHash,
+  }));
+}
+
+export function revokeSessionById(userId: string, shortId: string, currentToken: string | null): boolean {
+  if (!/^[a-f0-9]{16}$/.test(shortId)) return false;
+  const currentHash = currentToken ? hashToken(currentToken) : '';
+  const result = db
+    .prepare(`DELETE FROM sessions WHERE user_id = ? AND substr(token_hash, 1, 16) = ? AND token_hash != ?`)
+    .run(userId, shortId, currentHash);
+  return result.changes > 0;
+}
+
+export function deleteOtherSessions(userId: string, currentToken: string | null): number {
+  const currentHash = currentToken ? hashToken(currentToken) : '';
+  return Number(
+    db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token_hash != ?`).run(userId, currentHash).changes
+  );
 }

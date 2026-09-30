@@ -38,6 +38,17 @@ import {
 import { formatDateTime, formatINR, orderStatusMeta, statusMeta, RESERVATION_STATUS, STOCK_REQUEST_STATUS } from '../lib/format';
 import type { Order, Product, Reservation, StockRequest, Store } from '../types';
 
+interface InventoryEvent {
+  id: string;
+  product_id: string;
+  product_name: string;
+  type: string;
+  delta: number;
+  resulting_stock: number;
+  note: string | null;
+  created_at: string;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Dashboard                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -412,6 +423,8 @@ export const SellerOrderDetailPage: React.FC<{ orderId: string }> = ({ orderId }
     pollMs: 15000,
   });
   const [busy, setBusy] = useState<string | null>(null);
+  const [pickupCodeInput, setPickupCodeInput] = useState('');
+  const [pickupError, setPickupError] = useState<string | null>(null);
 
   if (resource.loading && !resource.data) return <Spinner label="Loading order…" />;
   if (resource.error) return <ErrorNote>{resource.error}</ErrorNote>;
@@ -420,6 +433,22 @@ export const SellerOrderDetailPage: React.FC<{ orderId: string }> = ({ orderId }
   const order = resource.data.order;
   const meta = orderStatusMeta(order.status);
   const actions = SELLER_ACTIONS[order.status] ?? [];
+
+  const completePickup = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setPickupError(null);
+    setBusy('complete');
+    try {
+      await api.post(`/api/seller/orders/${order.id}/complete-pickup`, { code: pickupCodeInput });
+      toast.push({ title: 'Pickup completed', description: 'The order is marked delivered.', tone: 'success' });
+      setPickupCodeInput('');
+      resource.reload();
+    } catch (error) {
+      setPickupError(errorMessage(error));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const changeStatus = async (next: string) => {
     setBusy(next);
@@ -470,6 +499,28 @@ export const SellerOrderDetailPage: React.FC<{ orderId: string }> = ({ orderId }
             ))}
           </div>
         )}
+        {order.fulfillmentType === 'pickup' && order.status === 'ready_for_pickup' && (
+          <form onSubmit={completePickup} className="mt-4 space-y-2 rounded-xl border border-blue-100 bg-blue-50/60 p-3">
+            <p className="text-xs font-semibold text-slate-800">Customer collecting in store</p>
+            <p className="text-[11px] text-slate-600">
+              Ask the customer for the code on their order page, then enter it here to hand over the order.
+            </p>
+            {pickupError && <ErrorNote>{pickupError}</ErrorNote>}
+            <div className="flex flex-wrap items-end gap-2">
+              <Field
+                label="Customer's code"
+                value={pickupCodeInput}
+                onChange={(event) => setPickupCodeInput(event.target.value)}
+                autoComplete="off"
+                inputMode="numeric"
+                className="w-40"
+              />
+              <Button type="submit" loading={busy === 'complete'} disabled={pickupCodeInput.trim().length < 4}>
+                Complete pickup
+              </Button>
+            </div>
+          </form>
+        )}
         {order.status === 'placed' && (
           <InfoNote className="mt-3">
             You can only move this order forward one step at a time — the server rejects invalid transitions such as
@@ -514,7 +565,11 @@ export const SellerOrderDetailPage: React.FC<{ orderId: string }> = ({ orderId }
         </Card>
 
         <div className="space-y-4">
-          {order.pickupCode ? (
+          {order.fulfillmentType === 'pickup' ? (
+            <InfoNote>
+              This is a store-pickup order. No rider is involved — the customer shows you their code at the counter.
+            </InfoNote>
+          ) : order.pickupCode ? (
             <HandoffCode
               code={order.pickupCode}
               label="Pickup code"
@@ -682,6 +737,13 @@ export const ProductEditorPage: React.FC<{ productId?: string }> = ({ productId 
     stock: '0',
     image: '',
     isPublished: true,
+    brand: '',
+    unit: '',
+    mrp: '',
+    sku: '',
+    productInfo: '',
+    availability: 'available',
+    lowStockThreshold: '5',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -704,6 +766,13 @@ export const ProductEditorPage: React.FC<{ productId?: string }> = ({ productId 
       stock: String(product.stock_quantity ?? product.stock),
       image: product.image ?? '',
       isPublished: product.is_published === 1,
+      brand: product.brand ?? '',
+      unit: product.unit ?? '',
+      mrp: product.mrp != null ? String(product.mrp) : '',
+      sku: product.sku ?? '',
+      productInfo: product.product_info ?? '',
+      availability: product.availability ?? 'available',
+      lowStockThreshold: String(product.low_stock_threshold ?? 5),
     });
   }, [isEdit, productId, productResource.data]);
 
@@ -719,6 +788,13 @@ export const ProductEditorPage: React.FC<{ productId?: string }> = ({ productId 
       stock: Number(form.stock),
       image: form.image || undefined,
       isPublished: form.isPublished,
+      brand: form.brand,
+      unit: form.unit,
+      mrp: form.mrp === '' ? null : Number(form.mrp),
+      sku: form.sku,
+      productInfo: form.productInfo,
+      availability: form.availability,
+      lowStockThreshold: Number(form.lowStockThreshold || 0),
     };
     try {
       if (isEdit) {
@@ -816,12 +892,64 @@ export const ProductEditorPage: React.FC<{ productId?: string }> = ({ productId 
             />
           </div>
 
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="MRP (₹, optional)"
+              type="number"
+              min={0.5}
+              step="0.5"
+              value={form.mrp}
+              onChange={(event) => setForm({ ...form, mrp: event.target.value })}
+              hint="Must not be lower than the selling price."
+            />
+            <Field
+              label="Low-stock alert at (units)"
+              type="number"
+              min={0}
+              value={form.lowStockThreshold}
+              onChange={(event) => setForm({ ...form, lowStockThreshold: event.target.value })}
+            />
+            <Field
+              label="Brand (optional)"
+              value={form.brand}
+              onChange={(event) => setForm({ ...form, brand: event.target.value })}
+              placeholder="Amul"
+            />
+            <Field
+              label="Unit / pack size (optional)"
+              value={form.unit}
+              onChange={(event) => setForm({ ...form, unit: event.target.value })}
+              placeholder="1 L"
+            />
+            <Field
+              label="SKU (optional)"
+              value={form.sku}
+              onChange={(event) => setForm({ ...form, sku: event.target.value })}
+            />
+            <SelectField
+              label="Availability"
+              value={form.availability}
+              onChange={(event) => setForm({ ...form, availability: event.target.value })}
+              options={[
+                { value: 'available', label: 'Available to order' },
+                { value: 'unavailable', label: 'Marked unavailable' },
+              ]}
+            />
+          </div>
+
           <TextAreaField
             label="Description"
             rows={3}
             value={form.description}
             onChange={(event) => setForm({ ...form, description: event.target.value })}
             placeholder="Homogenised toned milk, rich in calcium."
+          />
+          <TextAreaField
+            label="Product information (optional)"
+            rows={2}
+            value={form.productInfo}
+            onChange={(event) => setForm({ ...form, productInfo: event.target.value })}
+            placeholder="Storage, ingredients, shelf life…"
           />
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -893,20 +1021,36 @@ export const SellerInventoryPage: React.FC = () => {
   const [editing, setEditing] = useState<Product | null>(null);
   const [value, setValue] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [reason, setReason] = useState('');
+  const [eventPage, setEventPage] = useState(1);
+  const eventsResource = useApiResource(
+    () =>
+      api.get<{ events: InventoryEvent[]; total: number; hasMore: boolean }>(
+        `/api/seller/inventory/events?pageSize=${eventPage * 15}`
+      ),
+    [eventPage]
+  );
 
   const summary = resource.data?.summary;
 
-  const adjust = async (mode: 'set' | 'delta') => {
+  const [mode, setMode] = useState<'set' | 'delta'>('set');
+  const nextStock = mode === 'set' ? value : (editing?.stock_quantity ?? 0) + value;
+
+  const adjust = async () => {
     if (!editing) return;
+    if (nextStock < 0) return;
     setSaving(true);
     try {
       const result = await api.post<{ message: string }>(`/api/seller/products/${editing.id}/stock`, {
         mode,
         value,
+        reason: reason || undefined,
       });
       toast.push({ title: 'Stock updated', description: result.message, tone: 'success' });
       setEditing(null);
+      setReason('');
       resource.reload();
+      eventsResource.reload();
     } catch (error) {
       toast.push({ title: 'Could not update stock', description: errorMessage(error), tone: 'error' });
     } finally {
@@ -972,6 +1116,7 @@ export const SellerInventoryPage: React.FC = () => {
                       variant="secondary"
                       onClick={() => {
                         setEditing(product);
+                        setMode('set');
                         setValue(product.stock_quantity ?? 0);
                       }}
                     >
@@ -989,17 +1134,14 @@ export const SellerInventoryPage: React.FC = () => {
         open={editing !== null}
         onClose={() => setEditing(null)}
         title={`Stock for ${editing?.name ?? ''}`}
-        description="Choose the new shelf quantity, or apply a change relative to the current stock."
+        description="Set the exact shelf count, or add / remove units. Every change is logged."
         footer={
           <>
             <Button variant="ghost" onClick={() => setEditing(null)}>
               Cancel
             </Button>
-            <Button variant="secondary" loading={saving} onClick={() => adjust('delta')}>
-              Apply change
-            </Button>
-            <Button loading={saving} onClick={() => adjust('set')}>
-              Set exact stock
+            <Button loading={saving} disabled={nextStock < 0} onClick={adjust}>
+              Save stock
             </Button>
           </>
         }
@@ -1007,20 +1149,82 @@ export const SellerInventoryPage: React.FC = () => {
         <p className="text-xs text-slate-600">
           Currently {editing?.stock_quantity} on shelf, {editing?.reserved_quantity ?? 0} held for reservations.
         </p>
-        <div className="flex items-center gap-3">
-          <QuantityStepper value={value} min={0} max={100000} onChange={setValue} label="stock quantity" />
-          <Field
-            label="Value"
-            type="number"
-            value={String(value)}
-            onChange={(event) => setValue(Number(event.target.value))}
-            className="w-28"
-          />
+        <div className="flex gap-2" role="group" aria-label="Adjustment type">
+          {(['set', 'delta'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={mode === option}
+              onClick={() => {
+                setMode(option);
+                setValue(option === 'set' ? (editing?.stock_quantity ?? 0) : 0);
+              }}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                mode === option ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-300 text-slate-600'
+              }`}
+            >
+              {option === 'set' ? 'Set exact count' : 'Add / remove units'}
+            </button>
+          ))}
         </div>
+        <Field
+          label={mode === 'set' ? 'New shelf quantity' : 'Change by (use − to remove)'}
+          type="number"
+          min={mode === 'set' ? 0 : undefined}
+          value={String(value)}
+          onChange={(event) => setValue(Number(event.target.value))}
+          className="w-40"
+        />
+        <Field
+          label="Reason (optional)"
+          value={reason}
+          maxLength={160}
+          onChange={(event) => setReason(event.target.value)}
+          placeholder="Stock count, damaged, restock…"
+        />
+        <p className={`text-xs font-semibold ${nextStock < 0 ? 'text-red-600' : 'text-slate-700'}`}>
+          {nextStock < 0 ? 'Stock cannot go below zero.' : `New shelf quantity: ${nextStock}`}
+        </p>
         <InfoNote>
           Stock can never be set below the quantity already held for confirmed reservations, and cannot go negative.
         </InfoNote>
       </Modal>
+
+      <Card className="p-5">
+        <h2 className="text-sm font-bold text-slate-900">Stock activity</h2>
+        <p className="mt-0.5 text-xs text-slate-500">Sales, cancellations, restocks and manual changes, newest first.</p>
+        {eventsResource.loading && !eventsResource.data ? (
+          <Spinner label="Loading stock activity…" />
+        ) : (eventsResource.data?.events ?? []).length === 0 ? (
+          <p className="mt-3 text-xs text-slate-500">No stock activity recorded yet.</p>
+        ) : (
+          <ul className="mt-3 divide-y divide-slate-100">
+            {(eventsResource.data?.events ?? []).map((event) => (
+              <li key={event.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-slate-900">{event.product_name}</p>
+                  <p className="text-slate-500">
+                    {event.type.replace(/_/g, ' ')}
+                    {event.note ? ` · ${event.note}` : ''} · {formatDateTime(event.created_at)}
+                  </p>
+                </div>
+                <div className="text-right tabular-nums">
+                  <p className={`font-bold ${event.delta < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                    {event.delta > 0 ? '+' : ''}
+                    {event.delta}
+                  </p>
+                  <p className="text-[11px] text-slate-500">now {event.resulting_stock}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {eventsResource.data?.hasMore && (
+          <Button variant="ghost" size="sm" className="mt-2" onClick={() => setEventPage((page) => page + 1)}>
+            Show more
+          </Button>
+        )}
+      </Card>
     </div>
   );
 };
@@ -1269,6 +1473,172 @@ export const SellerRequestsPage: React.FC = () => {
 /* Store settings & performance                                               */
 /* -------------------------------------------------------------------------- */
 
+const StoreStatusCard: React.FC<{ store: Store; onChanged: () => void }> = ({ store, onChanged }) => {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(store.status_message ?? '');
+  const [closureType, setClosureType] = useState(store.closure_type ?? 'closed');
+  const isOpen = store.status === 'open';
+
+  const update = async (status: 'open' | 'closed') => {
+    setBusy(true);
+    try {
+      const result = await api.put<{ message: string }>('/api/seller/store/status', {
+        status,
+        closureType: status === 'closed' ? closureType : undefined,
+        message: status === 'closed' ? message : undefined,
+      });
+      toast.push({ title: status === 'open' ? 'Store is open' : 'Store is closed', description: result.message, tone: 'success' });
+      onChanged();
+    } catch (error) {
+      toast.push({ title: 'Could not update store status', description: errorMessage(error), tone: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-bold text-slate-900">Store status</h2>
+          <p className="mt-0.5 text-xs text-slate-600">
+            {isOpen
+              ? 'Open — customers can place new orders.'
+              : 'Closed — customers can browse but cannot check out. Orders already placed stay active.'}
+          </p>
+        </div>
+        <Badge tone={isOpen ? 'success' : 'warning'}>{isOpen ? 'Open' : 'Closed'}</Badge>
+      </div>
+      {!isOpen && store.status_message && <p className="mt-2 text-xs text-slate-500">Shown to customers: “{store.status_message}”</p>}
+      {isOpen ? (
+        <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+          <SelectField
+            label="Close as"
+            value={closureType}
+            onChange={(event) => setClosureType(event.target.value)}
+            options={[
+              { value: 'closed', label: 'Closed for now' },
+              { value: 'temporarily_unavailable', label: 'Temporarily unavailable' },
+            ]}
+          />
+          <Field
+            label="Message for customers (optional)"
+            value={message}
+            maxLength={160}
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder="Back at 5 pm"
+          />
+          <Button variant="secondary" loading={busy} onClick={() => update('closed')}>
+            Close store
+          </Button>
+        </div>
+      ) : (
+        <Button className="mt-4" loading={busy} onClick={() => update('open')}>
+          Open store
+        </Button>
+      )}
+    </Card>
+  );
+};
+
+const StoreFulfilmentCard: React.FC<{ store: Store; onChanged: () => void }> = ({ store, onChanged }) => {
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    supportsDelivery: store.supports_delivery !== 0,
+    supportsPickup: store.supports_pickup !== 0,
+    supportsReservations: store.supports_reservations !== 0,
+    fulfilmentMinMinutes: store.fulfilment_min_minutes != null ? String(store.fulfilment_min_minutes) : '',
+    fulfilmentMaxMinutes: store.fulfilment_max_minutes != null ? String(store.fulfilment_max_minutes) : '',
+    supportPhone: store.support_phone ?? '',
+    businessEmail: store.business_email ?? '',
+    legalName: store.legal_name ?? '',
+  });
+
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await api.put('/api/seller/store/settings', {
+        ...form,
+        fulfilmentMinMinutes: form.fulfilmentMinMinutes === '' ? null : Number(form.fulfilmentMinMinutes),
+        fulfilmentMaxMinutes: form.fulfilmentMaxMinutes === '' ? null : Number(form.fulfilmentMaxMinutes),
+      });
+      toast.push({ title: 'Fulfilment settings saved', tone: 'success' });
+      onChanged();
+    } catch (error) {
+      toast.push({ title: 'Could not save settings', description: errorMessage(error), tone: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const check = (key: 'supportsDelivery' | 'supportsPickup' | 'supportsReservations', label: string) => (
+    <label className="flex items-center gap-2 text-xs text-slate-700">
+      <input
+        type="checkbox"
+        checked={form[key]}
+        onChange={(event) => setForm({ ...form, [key]: event.target.checked })}
+        className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+      />
+      {label}
+    </label>
+  );
+
+  return (
+    <Card className="p-5">
+      <h2 className="text-sm font-bold text-slate-900">Fulfilment &amp; business details</h2>
+      <form onSubmit={save} className="mt-3 space-y-4">
+        <div className="space-y-2">
+          {check('supportsDelivery', 'Offer home delivery')}
+          {check('supportsPickup', 'Offer store pickup')}
+          {check('supportsReservations', 'Accept reservation requests')}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field
+            label="Minimum prep time (minutes)"
+            type="number"
+            min={5}
+            max={480}
+            value={form.fulfilmentMinMinutes}
+            onChange={(event) => setForm({ ...form, fulfilmentMinMinutes: event.target.value })}
+          />
+          <Field
+            label="Maximum prep time (minutes)"
+            type="number"
+            min={5}
+            max={480}
+            value={form.fulfilmentMaxMinutes}
+            onChange={(event) => setForm({ ...form, fulfilmentMaxMinutes: event.target.value })}
+          />
+          <Field
+            label="Legal / business name"
+            value={form.legalName}
+            onChange={(event) => setForm({ ...form, legalName: event.target.value })}
+          />
+          <Field
+            label="Business email"
+            type="email"
+            value={form.businessEmail}
+            onChange={(event) => setForm({ ...form, businessEmail: event.target.value })}
+          />
+          <Field
+            label="Support phone"
+            value={form.supportPhone}
+            onChange={(event) => setForm({ ...form, supportPhone: event.target.value })}
+          />
+        </div>
+        <div className="flex justify-end">
+          <Button type="submit" variant="secondary" loading={saving}>
+            Save fulfilment settings
+          </Button>
+        </div>
+      </form>
+    </Card>
+  );
+};
+
 export const SellerStorePage: React.FC = () => {
   const { user } = useAuth();
   const toast = useToast();
@@ -1327,6 +1697,7 @@ export const SellerStorePage: React.FC = () => {
     try {
       await api.post('/api/seller/store', {
         ...form,
+        status: undefined,
         latitude: form.latitude ? Number(form.latitude) : undefined,
         longitude: form.longitude ? Number(form.longitude) : undefined,
         image: form.image || undefined,
@@ -1372,6 +1743,9 @@ export const SellerStorePage: React.FC = () => {
       {store && store.status === 'inactive' && (
         <InfoNote>Your store is currently hidden. Customers cannot find or order from it.</InfoNote>
       )}
+
+      {store && store.status !== 'inactive' && <StoreStatusCard store={store} onChanged={() => storeResource.reload()} />}
+      {store && <StoreFulfilmentCard store={store} onChanged={() => storeResource.reload()} />}
 
       <Card className="p-6">
         <form onSubmit={save} className="space-y-4">
@@ -1469,16 +1843,6 @@ export const SellerStorePage: React.FC = () => {
               value={form.longitude}
               onChange={(event) => setForm({ ...form, longitude: event.target.value })}
               placeholder="77.0460"
-            />
-            <SelectField
-              label="Operating status"
-              value={form.status}
-              onChange={(event) => setForm({ ...form, status: event.target.value })}
-              options={[
-                { value: 'open', label: 'Open — accepting orders' },
-                { value: 'closed', label: 'Closed — visible but not accepting' },
-                { value: 'inactive', label: 'Hidden from discovery' },
-              ]}
             />
           </div>
 
@@ -1605,6 +1969,142 @@ export const SellerPerformancePage: React.FC = () => {
       <SuccessNote>
         Tip: answering stock checks quickly and keeping inventory accurate are the two biggest drivers of repeat orders.
       </SuccessNote>
+    </div>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+/* Earnings                                                                   */
+/* -------------------------------------------------------------------------- */
+
+interface SellerEarnings {
+  summary: {
+    today: number;
+    week: number;
+    month: number;
+    gross: number;
+    platformFeePercent: number;
+    platformFee: number;
+    net: number;
+    paidOut: number;
+    pendingPayout: number;
+  } | null;
+  settlements: {
+    id: string;
+    period_start: string;
+    period_end: string;
+    amount: number;
+    status: string;
+    reference: string | null;
+    created_at: string;
+    paid_at: string | null;
+  }[];
+  recent: { id: string; order_number: string; subtotal: number; fee: number; net: number; delivered_at: string }[];
+}
+
+export const SellerEarningsPage: React.FC = () => {
+  const resource = useApiResource(() => api.get<SellerEarnings>('/api/seller/earnings'), [], { pollMs: 60000 });
+  if (resource.loading && !resource.data) return <Spinner label="Loading earnings…" />;
+  if (resource.error) return <ErrorNote>{resource.error}</ErrorNote>;
+  const data = resource.data;
+  const summary = data?.summary;
+
+  if (!summary) {
+    return (
+      <EmptyState
+        title="No earnings yet"
+        description="Earnings are calculated from delivered orders once your store is live."
+        action={<Button onClick={() => navigate('/seller/store')}>Set up your store</Button>}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <SectionHeader
+        as="h1"
+        title="Earnings"
+        subtitle="Calculated from delivered orders only. Customer delivery fees go to the rider and are not included."
+      />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <StatCard label="Today" value={formatINR(summary.today)} />
+        <StatCard label="This week" value={formatINR(summary.week)} />
+        <StatCard label="This month" value={formatINR(summary.month)} />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Gross sales" value={formatINR(summary.gross)} hint="All delivered orders" />
+        <StatCard
+          label={`Platform fee (${summary.platformFeePercent}%)`}
+          value={formatINR(summary.platformFee)}
+        />
+        <StatCard label="Net earnings" value={formatINR(summary.net)} />
+        <StatCard
+          label="Pending payout"
+          value={formatINR(summary.pendingPayout)}
+          hint={`Paid out so far: ${formatINR(summary.paidOut)}`}
+        />
+      </div>
+
+      <Card className="p-5">
+        <h2 className="text-sm font-bold text-slate-900">Recent delivered orders</h2>
+        {data!.recent.length === 0 ? (
+          <p className="mt-3 text-xs text-slate-500">Nothing delivered yet — your first completed order will appear here.</p>
+        ) : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[480px] text-left text-xs">
+              <caption className="sr-only">Recent delivered orders and earnings</caption>
+              <thead className="text-[11px] uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th scope="col" className="py-2 pr-3">Order</th>
+                  <th scope="col" className="py-2 pr-3">Delivered</th>
+                  <th scope="col" className="py-2 pr-3 text-right">Sales</th>
+                  <th scope="col" className="py-2 pr-3 text-right">Fee</th>
+                  <th scope="col" className="py-2 text-right">Net</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {data!.recent.map((row) => (
+                  <tr key={row.id}>
+                    <td className="py-2 pr-3 font-semibold text-slate-900">
+                      <Link to={`/seller/orders/${row.id}`} className="hover:text-blue-700">
+                        {row.order_number}
+                      </Link>
+                    </td>
+                    <td className="py-2 pr-3 text-slate-600">{formatDateTime(row.delivered_at)}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{formatINR(row.subtotal)}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{formatINR(row.fee)}</td>
+                    <td className="py-2 text-right font-semibold tabular-nums">{formatINR(row.net)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-5">
+        <h2 className="text-sm font-bold text-slate-900">Settlements</h2>
+        {data!.settlements.length === 0 ? (
+          <p className="mt-3 text-xs text-slate-500">No settlements have been issued for your store yet.</p>
+        ) : (
+          <ul className="mt-3 divide-y divide-slate-100">
+            {data!.settlements.map((settlement) => (
+              <li key={settlement.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs">
+                <div>
+                  <p className="font-semibold text-slate-900">
+                    {settlement.period_start} – {settlement.period_end}
+                  </p>
+                  <p className="text-slate-500">{settlement.reference ?? 'Reference pending'}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold tabular-nums">{formatINR(settlement.amount)}</span>
+                  <Badge tone={settlement.status === 'paid' ? 'success' : 'warning'}>{settlement.status}</Badge>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
     </div>
   );
 };

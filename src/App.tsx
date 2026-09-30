@@ -33,17 +33,22 @@ import {
   SellerOrderDetailPage,
   SellerOrdersPage,
   SellerPerformancePage,
+  SellerEarningsPage,
   SellerProductsPage,
   SellerRequestsPage,
   SellerStorePage,
 } from './pages/seller';
 import {
+  RiderActivePage,
   RiderDashboardPage,
+  RiderEarningsPage,
   RiderHistoryPage,
   RiderJobDetailPage,
   RiderJobsPage,
   RiderProfilePage,
 } from './pages/rider';
+import { CustomerHomePage, SavedItemsPage } from './pages/customerHome';
+import { NotificationsPage, SecuritySettingsPage, SupportPage } from './pages/shared';
 import type { Role } from './types';
 
 type RouteMatch = { element: React.ReactNode; key: string } | null;
@@ -55,16 +60,34 @@ function resolveRoute(path: string): RouteMatch {
 
   // First-visit authentication gateway: the first screen for every visitor.
   if (pathname === '/') return { key: '/', element: <AuthGatewayPage /> };
-  if (pathname === '/discover') return { key: 'discover', element: <DiscoverPage tab="products" /> };
-  if (pathname === '/discover/stores') return { key: 'discover-stores', element: <DiscoverPage tab="stores" /> };
+  // Catalogue pages belong to the signed-in customer workspace (the API requires a customer session).
+  const gated = (key: string, element: React.ReactNode): RouteMatch => ({
+    key,
+    element: <RequireRole role="customer">{element}</RequireRole>,
+  });
+  if (pathname === '/discover') return gated('discover', <DiscoverPage tab="products" />);
+  if (pathname === '/discover/stores') return gated('discover-stores', <DiscoverPage tab="stores" />);
 
   const storeMatch = matchPath('/stores/:id', pathname);
-  if (storeMatch) return { key: `store-${storeMatch.id}`, element: <StoreDetailPage storeId={storeMatch.id} /> };
+  if (storeMatch) return gated(`store-${storeMatch.id}`, <StoreDetailPage storeId={storeMatch.id} />);
 
   const productMatch = matchPath('/products/:id', pathname);
-  if (productMatch) {
-    return { key: `product-${productMatch.id}`, element: <ProductDetailPage productId={productMatch.id} /> };
+  if (productMatch) return gated(`product-${productMatch.id}`, <ProductDetailPage productId={productMatch.id} />);
+
+  // Shared account pages for every role.
+  const accountMatch = matchPath('/:role/:page', pathname);
+  if (accountMatch && ROLES.includes(accountMatch.role as Role)) {
+    const role = accountMatch.role as Role;
+    const pages: Record<string, React.ReactNode> = {
+      notifications: <NotificationsPage role={role} />,
+      support: <SupportPage role={role} />,
+      security: <SecuritySettingsPage role={role} />,
+    };
+    if (pages[accountMatch.page]) {
+      return { key: `${role}-${accountMatch.page}`, element: <RequireRole role={role}>{pages[accountMatch.page]}</RequireRole> };
+    }
   }
+  if (pathname === '/customer/saved') return gated('customer-saved', <SavedItemsPage />);
 
   const authMatch = matchPath('/:role/auth', pathname);
   if (authMatch && ROLES.includes(authMatch.role as Role)) {
@@ -112,15 +135,10 @@ function resolveRoute(path: string): RouteMatch {
   if (pathname === '/customer/checkout') navigate('/checkout', { replace: true });
   if (pathname === '/customer/requests') navigate('/requests', { replace: true });
   if (pathname === '/customer/account') navigate('/account', { replace: true });
-  if (pathname === '/customer' || pathname === '/customer/discover') {
-    return {
-      key: 'customer-home',
-      element: (
-        <RequireRole role="customer">
-          <DiscoverPage tab="products" basePath="/customer" />
-        </RequireRole>
-      ),
-    };
+  if (pathname === '/customer') return gated('customer-home', <CustomerHomePage />);
+  if (pathname === '/customer/discover') {
+    navigate('/discover', { replace: true });
+    return { key: 'redirect-discover', element: null };
   }
 
   if (pathname === '/cart') {
@@ -278,6 +296,16 @@ function resolveRoute(path: string): RouteMatch {
       ),
     };
   }
+  if (pathname === '/seller/earnings') {
+    return {
+      key: 'seller-earnings',
+      element: (
+        <RequireRole role="seller">
+          <SellerEarningsPage />
+        </RequireRole>
+      ),
+    };
+  }
   if (pathname === '/seller/performance') {
     return {
       key: 'seller-performance',
@@ -321,6 +349,26 @@ function resolveRoute(path: string): RouteMatch {
       ),
     };
   }
+  if (pathname === '/rider/active') {
+    return {
+      key: 'rider-active',
+      element: (
+        <RequireRole role="rider">
+          <RiderActivePage />
+        </RequireRole>
+      ),
+    };
+  }
+  if (pathname === '/rider/earnings') {
+    return {
+      key: 'rider-earnings',
+      element: (
+        <RequireRole role="rider">
+          <RiderEarningsPage />
+        </RequireRole>
+      ),
+    };
+  }
   if (pathname === '/rider/history') {
     return {
       key: 'rider-history',
@@ -358,7 +406,7 @@ const Shell: React.FC = () => {
   React.useEffect(() => {
     if (path === '/' && user) {
       const home = roleHome(user.role);
-      if (home !== '/discover') navigate(home, { replace: true });
+      navigate(home, { replace: true });
     }
   }, [path, user]);
 

@@ -495,8 +495,17 @@ function ensureStore(store: SeedStore): { id: string; created: boolean } {
   return { id: store.key, created: true };
 }
 
+/** Catalogue metadata derived from the product title ("Amul Taaza Milk 1L" -> brand Amul, unit 1L). */
+function catalogMeta(product: SeedProduct) {
+  const unit = /(\d+(?:\.\d+)?\s?(?:kg|g|ml|l|pcs|pack|dozen))\s*$/i.exec(product.name)?.[1]?.replace(/\s+/g, '') ?? null;
+  const brand = product.name.split(' ')[0];
+  const sku = product.key.replace(/^prod_/, '').toUpperCase();
+  return { brand, unit, sku };
+}
+
 function ensureProduct(storeId: string, product: SeedProduct): { id: string; created: boolean } {
   const now = new Date().toISOString();
+  const meta = catalogMeta(product);
   const existing = db
     .prepare(`SELECT id FROM products WHERE id = ? OR (store_id = ? AND name = ?)`)
     .get(product.key, storeId, product.name) as any;
@@ -506,6 +515,9 @@ function ensureProduct(storeId: string, product: SeedProduct): { id: string; cre
       `UPDATE products SET name = ?, description = ?, category = ?, image = ?, price = ?, is_published = 1, updated_at = ?
        WHERE id = ?`
     ).run(product.name, product.description, product.category, product.image, product.price, now, existing.id);
+    db.prepare(
+      `UPDATE products SET brand = COALESCE(brand, ?), unit = COALESCE(unit, ?), sku = COALESCE(sku, ?) WHERE id = ?`
+    ).run(meta.brand, meta.unit, meta.sku, existing.id);
 
     // Seed stock is applied only to fresh inventory rows so a running demo that
     // has already sold units is not silently reset.
@@ -521,8 +533,9 @@ function ensureProduct(storeId: string, product: SeedProduct): { id: string; cre
   }
 
   db.prepare(
-    `INSERT INTO products (id, store_id, name, description, category, image, price, stock, is_published, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    `INSERT INTO products (id, store_id, name, description, category, image, price, stock, is_published,
+       brand, unit, sku, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
   ).run(
     product.key,
     storeId,
@@ -532,6 +545,9 @@ function ensureProduct(storeId: string, product: SeedProduct): { id: string; cre
     product.image,
     product.price,
     product.stock,
+    meta.brand,
+    meta.unit,
+    meta.sku,
     now,
     now
   );
@@ -570,6 +586,11 @@ export function seedDemoData(): SeedSummary {
       ).run('addr_demo_01', customer.id, now);
       summary.created.push('address:Flat 402, Shivani Apartments');
     }
+    // Real coordinates let the rider/customer views compute true distances.
+    db.prepare(
+      `UPDATE customer_addresses SET latitude = COALESCE(latitude, 28.5823), longitude = COALESCE(longitude, 77.05),
+         area = COALESCE(area, 'Sector 10') WHERE customer_id = ? AND id = 'addr_demo_01'`
+    ).run(customer.id);
 
     const cart = db.prepare(`SELECT id FROM carts WHERE customer_id = ?`).get(customer.id);
     if (!cart) {
@@ -593,6 +614,11 @@ export function seedDemoData(): SeedSummary {
       },
     });
     (rider.created ? summary.created : summary.updated).push(`rider:${DEMO_ACCOUNTS.rider.email}`);
+    db.prepare(
+      `INSERT OR IGNORE INTO rider_profiles (user_id, availability, account_status, vehicle_model, vehicle_verification,
+         city, state, created_at, updated_at)
+       VALUES (?, 'offline', 'active', 'Hero Splendor', 'verified', 'Dwarka, New Delhi', 'Delhi', ?, ?)`
+    ).run(rider.id, now, now);
 
     // 3. Stores and their owners (store owners get the same demo password)
     for (const store of STORES) {

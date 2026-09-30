@@ -7,12 +7,13 @@ import {
   MapPin,
   Phone,
   Plus,
+  RotateCcw,
   Trash2,
   Truck,
   User as UserIcon,
 } from 'lucide-react';
 import { Link, navigate } from '../lib/router';
-import { api, errorMessage } from '../lib/api';
+import { api, ApiRequestError, errorMessage } from '../lib/api';
 import { useApiResource } from '../lib/hooks';
 import { useAuth } from '../context/AuthContext';
 import { useCart } from '../context/CartContext';
@@ -98,13 +99,24 @@ export const CartPage: React.FC = () => {
   const subtotal = cart?.subtotal ?? 0;
   const deliveryFee = stores.reduce((sum, store) => sum + store.deliveryFee, 0);
   const issues = items.filter((item) => item.issue);
+  const priceChanges = items.filter((item) => item.priceChanged);
+  const closedStores = stores.filter((store) => store.storeClosed);
+
+  const removeStore = async (storeId: string) => {
+    try {
+      await api.del(`/api/customer/cart/stores/${storeId}`);
+      await refresh();
+    } catch (error) {
+      toast.push({ title: 'Could not remove items', description: errorMessage(error), tone: 'error' });
+    }
+  };
 
   if (items.length === 0) {
     return (
       <EmptyState
         title="Your cart is empty"
         description="Browse Dwarka stores and add what you need — your cart persists against your account."
-        action={<Button onClick={() => navigate('/discover')}>Browse stores</Button>}
+        action={<Button onClick={() => navigate('/customer')}>Browse stores</Button>}
       />
     );
   }
@@ -128,6 +140,32 @@ export const CartPage: React.FC = () => {
         }
       />
 
+      {priceChanges.length > 0 && (
+        <InfoNote>
+          <span className="font-semibold">Prices changed since you added these items:</span>
+          <ul className="mt-1 space-y-1">
+            {priceChanges.map((item) => (
+              <li key={item.id} className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  {item.name}: {formatINR(item.priceChanged!.from)} → <strong>{formatINR(item.priceChanged!.to)}</strong>
+                </span>
+                <Button size="sm" variant="secondary" onClick={() => setQuantity(item.product_id, item.quantity)}>
+                  Accept new price
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </InfoNote>
+      )}
+
+      {closedStores.length > 0 && (
+        <ErrorNote>
+          {closedStores.map((store) => store.storeName).join(', ')} {closedStores.length === 1 ? 'is' : 'are'} closed right
+          now. Remove {closedStores.length === 1 ? 'its items' : 'their items'} or come back when{' '}
+          {closedStores.length === 1 ? 'it reopens' : 'they reopen'} to check out.
+        </ErrorNote>
+      )}
+
       {issues.length > 0 && (
         <ErrorNote>
           Some items need attention before checkout:
@@ -149,7 +187,18 @@ export const CartPage: React.FC = () => {
                 <Link to={`/stores/${store.storeId}`} className="text-sm font-bold text-slate-900 hover:text-blue-700">
                   {store.storeName}
                 </Link>
-                <Badge tone="info">Delivery {formatINR(store.deliveryFee)}</Badge>
+                <div className="flex items-center gap-2">
+                  {store.storeClosed && <Badge tone="danger">Closed</Badge>}
+                  <Badge tone="info">Delivery {formatINR(store.deliveryFee)}</Badge>
+                  <button
+                    type="button"
+                    onClick={() => removeStore(store.storeId)}
+                    className="text-[11px] font-semibold text-slate-500 underline"
+                    aria-label={`Remove all items from ${store.storeName}`}
+                  >
+                    Remove all
+                  </button>
+                </div>
               </div>
               <ul className="space-y-4">
                 {store.items.map((item) => (
@@ -164,7 +213,8 @@ export const CartPage: React.FC = () => {
                           {item.name}
                         </Link>
                         <p className="text-xs text-slate-500">
-                          {formatINR(item.price)} each · {item.stock} in stock
+                          {formatINR(item.price)}{item.unit ? ` / ${item.unit}` : ''} ·{' '}
+                          {item.availabilityState === 'low' ? `Only ${item.stock} left` : `${item.stock} in stock`}
                         </p>
                         {item.issue && <p className="text-[11px] font-medium text-red-600">{item.issue}</p>}
                       </div>
@@ -218,7 +268,12 @@ export const CartPage: React.FC = () => {
           <p className="mt-2 text-[11px] text-slate-500">
             Each store is fulfilled separately — checkout creates one order per store, each with its own delivery partner.
           </p>
-          <Button className="mt-4 w-full" size="lg" onClick={() => navigate('/checkout')} disabled={issues.length > 0}>
+          <Button
+            className="mt-4 w-full"
+            size="lg"
+            onClick={() => navigate('/checkout')}
+            disabled={issues.length > 0 || closedStores.length > 0 || priceChanges.length > 0}
+          >
             Proceed to checkout
             <ArrowRight className="h-4 w-4" aria-hidden="true" />
           </Button>
@@ -301,6 +356,7 @@ export const CheckoutPage: React.FC = () => {
           fulfilmentType,
           addressId: fulfilmentType === 'delivery' ? addressId : undefined,
           paymentMethod,
+          expectedTotal: quote?.quote.total,
           idempotencyKey: idempotencyKeyRef.current,
         }
       );
@@ -309,7 +365,17 @@ export const CheckoutPage: React.FC = () => {
       await refreshCart();
       toast.push({ title: result.message, tone: 'success' });
     } catch (error) {
-      toast.push({ title: 'Checkout failed', description: errorMessage(error), tone: 'error' });
+      const priceChanged = error instanceof ApiRequestError && error.code === 'price_changed';
+      if (priceChanged) {
+        // The basket total moved since the quote; new idempotency key so the retry is a fresh, reviewed attempt.
+        idempotencyKeyRef.current = `chk_${crypto.randomUUID()}`;
+        void refreshCart();
+      }
+      toast.push({
+        title: priceChanged ? 'Prices changed — please review' : 'Checkout failed',
+        description: errorMessage(error),
+        tone: 'error',
+      });
       void loadQuote();
     } finally {
       setPlacing(false);
@@ -371,7 +437,7 @@ export const CheckoutPage: React.FC = () => {
           </div>
           <div className="mt-5 flex flex-wrap justify-center gap-2">
             <Button onClick={() => navigate('/orders')}>Go to my orders</Button>
-            <Button variant="secondary" onClick={() => navigate('/discover')}>
+            <Button variant="secondary" onClick={() => navigate('/customer')}>
               Keep shopping
             </Button>
           </div>
@@ -385,7 +451,7 @@ export const CheckoutPage: React.FC = () => {
       <EmptyState
         title="Nothing to check out"
         description="Add items to your cart first."
-        action={<Button onClick={() => navigate('/discover')}>Browse stores</Button>}
+        action={<Button onClick={() => navigate('/customer')}>Browse stores</Button>}
       />
     );
   }
@@ -937,7 +1003,7 @@ export const OrdersPage: React.FC = () => {
       <EmptyState
         title="No orders yet"
         description="Once you place an order it appears here with its live status and delivery code."
-        action={<Button onClick={() => navigate('/discover')}>Start shopping</Button>}
+        action={<Button onClick={() => navigate('/customer')}>Start shopping</Button>}
       />
     );
   }
@@ -999,10 +1065,12 @@ export const OrderSummaryCard: React.FC<{ order: Order }> = ({ order }) => {
 
 export const OrderDetailPage: React.FC<{ orderId: string }> = ({ orderId }) => {
   const toast = useToast();
+  const { refresh: refreshCart } = useCart();
   const resource = useApiResource(() => api.get<{ order: Order }>(`/api/customer/orders/${orderId}`), [orderId], {
     pollMs: 15000,
   });
   const [cancelling, setCancelling] = useState(false);
+  const [reordering, setReordering] = useState(false);
 
   if (resource.loading && !resource.data) return <Spinner label="Loading order…" />;
   if (resource.error) return <ErrorNote>{resource.error}</ErrorNote>;
@@ -1011,6 +1079,33 @@ export const OrderDetailPage: React.FC<{ orderId: string }> = ({ orderId }) => {
   const order = resource.data.order;
   const meta = orderStatusMeta(order.status);
   const currentStep = timelineIndex(order.status);
+
+  const reorder = async () => {
+    setReordering(true);
+    try {
+      const result = await api.post<{
+        message: string;
+        added: { name: string; priceChanged: boolean; reducedForStock: boolean }[];
+        skipped: { name: string; reason: string }[];
+      }>(`/api/customer/orders/${order.id}/reorder`);
+      const notes = [
+        ...result.skipped.map((entry) => `${entry.name}: ${entry.reason}`),
+        ...result.added.filter((entry) => entry.priceChanged).map((entry) => `${entry.name}: price changed`),
+        ...result.added.filter((entry) => entry.reducedForStock).map((entry) => `${entry.name}: quantity reduced to stock`),
+      ];
+      toast.push({
+        title: result.message,
+        description: notes.length ? notes.join(' · ') : undefined,
+        tone: result.added.length ? 'success' : 'error',
+      });
+      await refreshCart();
+      if (result.added.length) navigate('/cart');
+    } catch (error) {
+      toast.push({ title: 'Could not reorder', description: errorMessage(error), tone: 'error' });
+    } finally {
+      setReordering(false);
+    }
+  };
 
   const cancelOrder = async () => {
     setCancelling(true);
@@ -1134,13 +1229,33 @@ export const OrderDetailPage: React.FC<{ orderId: string }> = ({ orderId }) => {
         </div>
 
         <div className="space-y-4">
-          {order.deliveryCode && !['cancelled', 'rejected'].includes(order.status) && (
+          {order.deliveryCodeState === 'available' && order.deliveryCode && (
             <HandoffCode
               code={order.deliveryCode}
               label="Your delivery code"
-              hint="Share this only when the rider hands over your order. Nobody else can see it."
-              tone={order.status === 'delivered' ? 'success' : 'info'}
+              hint={
+                order.fulfillmentType === 'pickup'
+                  ? 'Show this at the store counter when you collect your order.'
+                  : 'Share this only when the rider hands over your order. Nobody else can see it.'
+              }
+              tone="info"
             />
+          )}
+          {order.deliveryCodeState === 'locked' && (
+            <Card className="p-4 text-xs text-slate-600">
+              <p className="font-bold text-slate-900">Delivery code</p>
+              <p className="mt-1">
+                Your code will appear here once your order is{' '}
+                {order.fulfillmentType === 'pickup' ? 'ready for collection' : 'out for delivery'}. It is kept private
+                until then.
+              </p>
+            </Card>
+          )}
+          {order.deliveryCodeState === 'used' && (
+            <Card className="p-4 text-xs text-slate-600">
+              <p className="font-bold text-slate-900">Delivery code</p>
+              <p className="mt-1">Code verified — your order was handed over. It can no longer be used.</p>
+            </Card>
           )}
 
           <Card className="p-5">
@@ -1177,7 +1292,7 @@ export const OrderDetailPage: React.FC<{ orderId: string }> = ({ orderId }) => {
             {order.rider ? (
               <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
                 <p className="font-semibold text-slate-900">Delivery partner: {order.rider.name}</p>
-                <p className="text-slate-500">{order.rider.phone}</p>
+                <p className="text-slate-500">Status: {order.rider.status ? order.rider.status.replace(/_/g, ' ') : 'assigned'}</p>
               </div>
             ) : (
               order.fulfillmentType === 'delivery' &&
@@ -1191,6 +1306,12 @@ export const OrderDetailPage: React.FC<{ orderId: string }> = ({ orderId }) => {
             {order.status === 'placed' && (
               <Button variant="danger" className="mt-4 w-full" onClick={cancelOrder} loading={cancelling}>
                 Cancel order
+              </Button>
+            )}
+            {['delivered', 'cancelled', 'rejected'].includes(order.status) && (
+              <Button variant="secondary" className="mt-4 w-full" onClick={reorder} loading={reordering}>
+                <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                Buy again
               </Button>
             )}
           </Card>
