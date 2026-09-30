@@ -29,6 +29,10 @@ import {
 import { toRupees } from '../pricing.js';
 import { assertSellerTransition, statusLabel } from '../orderStateMachine.js';
 import { hydrateOrder } from './customer.routes.js';
+import { buildAccountRouter } from './account.routes.js';
+import { decorateStore, queryProducts } from '../catalog.js';
+import { IST_MONTH_START, IST_TODAY, IST_WEEK_START, istDate } from '../time.js';
+import { codesMatch } from '../codes.js';
 import {
   optionalCoordinate,
   optionalPhone,
@@ -225,6 +229,33 @@ const productSelect = `
          (i.stock_quantity - i.reserved_quantity) AS sellable
   FROM products p JOIN inventory i ON i.product_id = p.id`;
 
+function parseProductExtras(body: any, existing: any | null) {
+  const brand = body?.brand !== undefined ? optionalString(body.brand, 'Brand', { max: 60 }) || null : existing?.brand ?? null;
+  const unit = body?.unit !== undefined ? optionalString(body.unit, 'Unit', { max: 30 }) || null : existing?.unit ?? null;
+  const sku = body?.sku !== undefined ? optionalString(body.sku, 'SKU', { max: 40 }) || null : existing?.sku ?? null;
+  const productInfo =
+    body?.productInfo !== undefined
+      ? sanitizeText(optionalString(body.productInfo, 'Product information', { max: 1000 }) || '') || null
+      : existing?.product_info ?? null;
+  let mrp: number | null = existing?.mrp ?? null;
+  if (body?.mrp !== undefined) {
+    mrp = body.mrp === null || body.mrp === '' ? null : toRupees(requireNumber(body.mrp, 'MRP', { min: 0.5, max: 1_000_000 }));
+    const effectivePrice = body?.price !== undefined ? Number(body.price) : existing?.price;
+    if (mrp !== null && effectivePrice !== undefined && mrp < effectivePrice) {
+      throw ApiError.badRequest('MRP cannot be lower than the selling price.');
+    }
+  }
+  const availability =
+    body?.availability !== undefined
+      ? requireEnum(body.availability, 'Availability', ['available', 'unavailable'] as const)
+      : existing?.availability ?? 'available';
+  const threshold =
+    body?.lowStockThreshold !== undefined
+      ? requirePositiveInt(body.lowStockThreshold, 'Low-stock threshold', { min: 0, max: 10000 })
+      : undefined;
+  return { brand, unit, sku, productInfo, mrp, availability, threshold };
+}
+
 sellerRouter.get(
   '/products',
   route((req: AuthenticatedRequest, res) => {
@@ -275,17 +306,31 @@ sellerRouter.post(
     const category = requireString(req.body?.category ?? 'Grocery', 'Category', { min: 2, max: 60 });
     const price = toRupees(requireNumber(req.body?.price, 'Price', { min: 0.5, max: 1_000_000 }));
     const stock = requirePositiveInt(req.body?.stock ?? 0, 'Stock', { min: 0, max: 100000 });
+    if (!PRODUCT_CATEGORIES.includes(category as any)) {
+      throw ApiError.badRequest(`Choose a category from: ${PRODUCT_CATEGORIES.join(', ')}.`);
+    }
     const image = optionalString(req.body?.image, 'Product image', { max: 500 });
     const isPublished = req.body?.isPublished === false ? 0 : 1;
+    const extra = parseProductExtras(req.body, null);
     const id = randomId('prod');
     const now = new Date().toISOString();
 
     withTransaction(() => {
       db.prepare(
-        `INSERT INTO products (id, store_id, name, description, category, image, price, stock, is_published, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(id, store.id, name, description, category, image ?? null, price, stock, isPublished, now, now);
+        `INSERT INTO products (id, store_id, name, description, category, image, price, stock, is_published,
+           brand, unit, mrp, sku, availability, product_info, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        id, store.id, name, description, category, image ?? null, price, stock, isPublished,
+        extra.brand, extra.unit, extra.mrp, extra.sku, extra.availability, extra.productInfo, now, now
+      );
       createInventoryForProduct(id, stock);
+      if (extra.threshold !== undefined) {
+        db.prepare(`UPDATE inventory SET low_stock_threshold = ? WHERE product_id = ?`).run(extra.threshold, id);
+      }
+      recordInventoryEvent({
+        productId: id, storeId: store.id, type: 'initial', delta: stock, actorId: req.user!.id, note: 'Product created',
+      });
     });
 
     logger.info('seller.product_created', { sellerId: req.user!.id, productId: id, stock });
@@ -324,18 +369,38 @@ sellerRouter.put(
         ? 1
         : 0;
 
+    const extra = parseProductExtras(req.body, existing);
+    if (extra.mrp !== null && extra.mrp < price) throw ApiError.badRequest('MRP cannot be lower than the selling price.');
     const now = new Date().toISOString();
     let stockNote: string | null = null;
 
     withTransaction(() => {
       db.prepare(
-        `UPDATE products SET name = ?, description = ?, category = ?, price = ?, image = ?, is_published = ?, updated_at = ?
+        `UPDATE products SET name = ?, description = ?, category = ?, price = ?, image = ?, is_published = ?,
+           brand = ?, unit = ?, mrp = ?, sku = ?, availability = ?, product_info = ?, updated_at = ?
          WHERE id = ? AND store_id = ?`
-      ).run(name, description, category, price, image, isPublished, now, req.params.id, store.id);
+      ).run(
+        name, description, category, price, image, isPublished,
+        extra.brand, extra.unit, extra.mrp, extra.sku, extra.availability, extra.productInfo, now,
+        req.params.id, store.id
+      );
+      if (extra.threshold !== undefined) {
+        db.prepare(`UPDATE inventory SET low_stock_threshold = ?, updated_at = ? WHERE product_id = ?`).run(
+          extra.threshold, now, req.params.id
+        );
+      }
 
       if (req.body?.stock !== undefined) {
         const desired = requirePositiveInt(req.body.stock, 'Stock', { min: 0, max: 100000 });
+        const before = getInventory(req.params.id)?.stockQuantity ?? 0;
         const result = setStock(req.params.id, desired);
+        if (result.stockQuantity !== before) {
+          recordInventoryEvent({
+            productId: req.params.id, storeId: store.id, type: 'seller_adjustment',
+            delta: result.stockQuantity - before, actorId: req.user!.id, note: 'Edited from product form',
+          });
+          maybeNotifyLowStock(req.params.id);
+        }
         if (result.clampedToReserved) {
           stockNote = `Stock was kept at ${result.stockQuantity} because that many units are held for confirmed reservations.`;
         }
@@ -364,7 +429,19 @@ sellerRouter.post(
 
     if (next < 0) throw ApiError.badRequest('Stock cannot be negative.');
 
+    const reason = optionalString(req.body?.reason, 'Reason', { max: 160 });
     const result = setStock(req.params.id, next);
+    if (result.stockQuantity !== (current?.stockQuantity ?? 0)) {
+      recordInventoryEvent({
+        productId: req.params.id,
+        storeId: store.id,
+        type: 'seller_adjustment',
+        delta: result.stockQuantity - (current?.stockQuantity ?? 0),
+        actorId: req.user!.id,
+        note: reason || (mode === 'delta' ? 'Stock adjusted' : 'Stock count set'),
+      });
+      maybeNotifyLowStock(req.params.id);
+    }
     const inventory = getInventory(req.params.id);
     res.json({
       inventory,
@@ -796,8 +873,8 @@ sellerRouter.get(
       .get(store.id) as any;
     const todayRow = db
       .prepare(
-        `SELECT COALESCE(SUM(total), 0) AS revenue, COUNT(*) AS orders FROM orders
-         WHERE store_id = ? AND date(created_at) = date('now') AND status NOT IN ('cancelled','rejected')`
+        `SELECT COALESCE(SUM(subtotal), 0) AS revenue, COUNT(*) AS orders FROM orders
+         WHERE store_id = ? AND ${istDate('created_at')} = ${IST_TODAY} AND status NOT IN ('cancelled','rejected')`
       )
       .get(store.id) as any;
 
@@ -817,6 +894,18 @@ sellerRouter.get(
         todayRevenue: toRupees(todayRow.revenue),
         todayOrders: todayRow.orders,
         heldUnits: heldUnits.held,
+        lowStockCount: lowStockProducts(store.id).length,
+        outOfStockCount: (
+          db
+            .prepare(
+              `SELECT COUNT(*) AS c FROM products p JOIN inventory i ON i.product_id = p.id
+               WHERE p.store_id = ? AND p.is_published = 1 AND i.stock_quantity - i.reserved_quantity <= 0`
+            )
+            .get(store.id) as any
+        ).c,
+        liveProducts: (
+          db.prepare(`SELECT COUNT(*) AS c FROM products WHERE store_id = ? AND is_published = 1`).get(store.id) as any
+        ).c,
       },
       actionRequired: {
         newOrders: metricRow.new_orders,
@@ -860,9 +949,9 @@ sellerRouter.get(
       .all(store.id);
     const daily = db
       .prepare(
-        `SELECT date(created_at) AS day, COUNT(*) AS orders,
+        `SELECT ${istDate('created_at')} AS day, COUNT(*) AS orders,
                 COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','rejected') THEN total ELSE 0 END), 0) AS revenue
-         FROM orders WHERE store_id = ? GROUP BY date(created_at)
+         FROM orders WHERE store_id = ? GROUP BY ${istDate('created_at')}
          ORDER BY day DESC LIMIT 14`
       )
       .all(store.id);
@@ -921,5 +1010,218 @@ sellerRouter.put(
     res.json({ message: 'Profile updated.' });
   })
 );
+
+/* -------------------------------------------------------------------------- */
+/* Store operations: status, settings, preview                                */
+/* -------------------------------------------------------------------------- */
+
+sellerRouter.put(
+  '/store/status',
+  route((req: AuthenticatedRequest, res) => {
+    const store = requireStore(req.user!.id);
+    const status = requireEnum(req.body?.status, 'Store status', ['open', 'closed'] as const);
+    const closureType =
+      status === 'closed'
+        ? requireEnum(req.body?.closureType ?? 'closed', 'Closure type', ['closed', 'temporarily_unavailable'] as const)
+        : null;
+    const message = optionalString(req.body?.message, 'Message', { max: 160 }) || null;
+    const now = new Date().toISOString();
+    db.prepare(
+      `UPDATE stores SET status = ?, closure_type = ?, status_message = ?,
+         published_at = COALESCE(published_at, ?), updated_at = ? WHERE id = ?`
+    ).run(status, closureType, status === 'closed' ? message : null, now, now, store.id);
+    audit(req.user!.id, 'seller', `store.${status}`, 'store', store.id, { closureType });
+    res.json({
+      store: getSellerStore(req.user!.id),
+      message:
+        status === 'open'
+          ? 'Your store is open. Customers can place new orders.'
+          : 'Your store is closed. Customers can browse but cannot check out; open orders stay active.',
+    });
+  })
+);
+
+sellerRouter.put(
+  '/store/settings',
+  route((req: AuthenticatedRequest, res) => {
+    const store = requireStore(req.user!.id);
+    const bool = (v: unknown, current: number) => (v === undefined ? current : v ? 1 : 0);
+    const minutes = (v: unknown, label: string, current: number | null) =>
+      v === undefined || v === null || v === ''
+        ? v === undefined ? current : null
+        : requirePositiveInt(v, label, { min: 5, max: 480 });
+    const fMin = minutes(req.body?.fulfilmentMinMinutes, 'Minimum fulfilment time', store.fulfilment_min_minutes);
+    const fMax = minutes(req.body?.fulfilmentMaxMinutes, 'Maximum fulfilment time', store.fulfilment_max_minutes);
+    if (fMin !== null && fMax !== null && fMin > fMax) {
+      throw ApiError.badRequest('Minimum fulfilment time cannot exceed the maximum.');
+    }
+    const supportsDelivery = bool(req.body?.supportsDelivery, store.supports_delivery);
+    const supportsPickup = bool(req.body?.supportsPickup, store.supports_pickup);
+    if (!supportsDelivery && !supportsPickup) {
+      throw ApiError.badRequest('Enable at least one of delivery or pickup.');
+    }
+    const logo = req.body?.logo !== undefined ? optionalString(req.body.logo, 'Logo', { max: 500 }) || null : store.logo;
+    db.prepare(
+      `UPDATE stores SET supports_delivery = ?, supports_pickup = ?, supports_reservations = ?,
+         fulfilment_min_minutes = ?, fulfilment_max_minutes = ?, logo = ?,
+         legal_name = ?, business_email = ?, support_phone = ?, updated_at = ? WHERE id = ?`
+    ).run(
+      supportsDelivery,
+      supportsPickup,
+      bool(req.body?.supportsReservations, store.supports_reservations),
+      fMin,
+      fMax,
+      logo,
+      req.body?.legalName !== undefined ? optionalString(req.body.legalName, 'Legal name', { max: 120 }) || null : store.legal_name,
+      req.body?.businessEmail !== undefined ? optionalString(req.body.businessEmail, 'Business email', { max: 120 }) || null : store.business_email,
+      req.body?.supportPhone !== undefined ? optionalPhone(req.body.supportPhone) || null : store.support_phone,
+      new Date().toISOString(),
+      store.id
+    );
+    res.json({ store: getSellerStore(req.user!.id), message: 'Store settings saved.' });
+  })
+);
+
+// The storefront exactly as customers see it (read-only preview).
+sellerRouter.get(
+  '/store/preview',
+  route((req: AuthenticatedRequest, res) => {
+    const store = requireStore(req.user!.id);
+    const products = queryProducts({ ...req.query, storeId: store.id, includeUnpublishedStores: true });
+    res.json({
+      store: decorateStore({ ...store, product_count: products.total }),
+      visibleToCustomers: store.status !== 'inactive' && Boolean(store.published_at),
+      ...products,
+    });
+  })
+);
+
+/* -------------------------------------------------------------------------- */
+/* Inventory events                                                           */
+/* -------------------------------------------------------------------------- */
+
+sellerRouter.get(
+  '/inventory/events',
+  route((req: AuthenticatedRequest, res) => {
+    const store = getSellerStore(req.user!.id);
+    if (!store) {
+      res.json({ events: [], total: 0, page: 1 });
+      return;
+    }
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 30));
+    const productId = typeof req.query.productId === 'string' ? req.query.productId : null;
+    const where = `e.store_id = ? ${productId ? 'AND e.product_id = ?' : ''}`;
+    const params: any[] = productId ? [store.id, productId] : [store.id];
+    const total = (db.prepare(`SELECT COUNT(*) AS c FROM inventory_events e WHERE ${where}`).get(...params) as any).c;
+    const events = db
+      .prepare(
+        `SELECT e.id, e.product_id, p.name AS product_name, e.type, e.delta, e.resulting_stock, e.note, e.created_at
+         FROM inventory_events e JOIN products p ON p.id = e.product_id
+         WHERE ${where} ORDER BY e.created_at DESC, e.rowid DESC LIMIT ? OFFSET ?`
+      )
+      .all(...params, pageSize, (page - 1) * pageSize);
+    res.json({ events, total, page, pageSize, hasMore: page * pageSize < total });
+  })
+);
+
+/* -------------------------------------------------------------------------- */
+/* In-store pickup hand-off                                                   */
+/* -------------------------------------------------------------------------- */
+
+// Pickup orders complete when the customer shows their code at the counter.
+sellerRouter.post(
+  '/orders/:id/complete-pickup',
+  rateLimit({ windowMs: 10 * 60 * 1000, max: 20, keyPrefix: 'complete_pickup' }),
+  route((req: AuthenticatedRequest, res) => {
+    const store = requireStore(req.user!.id);
+    const order = db
+      .prepare(`SELECT * FROM orders WHERE id = ? AND store_id = ?`)
+      .get(req.params.id, store.id) as any;
+    if (!order) throw ApiError.notFound('Order not found.');
+    if (order.fulfillment_type !== 'pickup') {
+      throw ApiError.badRequest('Delivery orders are completed by the assigned rider.');
+    }
+    if (order.status !== 'ready_for_pickup') {
+      throw ApiError.badRequest('This order is not ready for collection yet.');
+    }
+    const code = requireString(req.body?.code, 'Customer code', { min: 4, max: 12 });
+    if (!codesMatch(code, order.delivery_code)) {
+      throw ApiError.badRequest('That code does not match. Ask the customer to check their order page.', 'invalid_code');
+    }
+    const now = new Date().toISOString();
+    withTransaction(() => {
+      db.prepare(`UPDATE orders SET status = 'delivered', delivered_at = ?, updated_at = ? WHERE id = ?`).run(now, now, order.id);
+      db.prepare(
+        `INSERT INTO handoff_events (id, order_id, event_type, actor_role, actor_id, note, created_at)
+         VALUES (?, ?, 'ORDER_DELIVERED', 'seller', ?, 'Collected in store', ?)`
+      ).run(randomId('he'), order.id, req.user!.id, now);
+      notifyCustomerOfOrder(order.customer_id, order.id, order.order_number, 'delivered');
+    });
+    res.json({ message: 'Pickup completed.', order: hydrateOrder(order.id, 'seller') });
+  })
+);
+
+/* -------------------------------------------------------------------------- */
+/* Earnings (derived from real delivered orders)                              */
+/* -------------------------------------------------------------------------- */
+
+sellerRouter.get(
+  '/earnings',
+  route((req: AuthenticatedRequest, res) => {
+    const store = getSellerStore(req.user!.id);
+    if (!store) {
+      res.json({ summary: null, settlements: [], recent: [] });
+      return;
+    }
+    const sum = (clause: string) =>
+      toRupees(
+        (
+          db
+            .prepare(
+              `SELECT COALESCE(SUM(subtotal), 0) AS t FROM orders
+               WHERE store_id = ? AND status = 'delivered' ${clause}`
+            )
+            .get(store.id) as any
+        ).t
+      );
+    const commission = config.platformFeePercent;
+    const gross = sum('');
+    const settlements = db
+      .prepare(
+        `SELECT id, period_start, period_end, amount, status, reference, created_at, paid_at
+         FROM settlements WHERE user_id = ? AND role = 'seller' ORDER BY created_at DESC LIMIT 50`
+      )
+      .all(req.user!.id) as any[];
+    const paid = toRupees(settlements.filter((s) => s.status === 'paid').reduce((t, s) => t + s.amount, 0));
+    const recent = db
+      .prepare(
+        `SELECT id, order_number, subtotal, delivered_at FROM orders
+         WHERE store_id = ? AND status = 'delivered' ORDER BY delivered_at DESC LIMIT 20`
+      )
+      .all(store.id) as any[];
+    res.json({
+      summary: {
+        today: sum(`AND ${istDate('delivered_at')} = ${IST_TODAY}`),
+        week: sum(`AND ${istDate('delivered_at')} >= ${IST_WEEK_START}`),
+        month: sum(`AND ${istDate('delivered_at')} >= ${IST_MONTH_START}`),
+        gross,
+        platformFeePercent: commission,
+        platformFee: toRupees((gross * commission) / 100),
+        net: toRupees(gross - (gross * commission) / 100),
+        paidOut: paid,
+        pendingPayout: toRupees(Math.max(0, gross - (gross * commission) / 100 - paid)),
+      },
+      settlements,
+      recent: recent.map((row) => ({
+        ...row,
+        fee: toRupees((row.subtotal * commission) / 100),
+        net: toRupees(row.subtotal - (row.subtotal * commission) / 100),
+      })),
+    });
+  })
+);
+
+sellerRouter.use(buildAccountRouter('seller'));
 
 export { PRODUCT_CATEGORIES };
