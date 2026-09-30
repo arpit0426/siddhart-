@@ -1,0 +1,6 @@
+{
+  "name": "NearBuy",
+  "description": "What You Need, Already Nearby. Multi-role neighbourhood commerce platform connecting Customers, Sellers, and Riders.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
