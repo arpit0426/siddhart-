@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Bell,
   Bike,
   ChevronDown,
   LogOut,
@@ -15,6 +16,8 @@ import { Link, navigate, useRoutePath } from '../../lib/router';
 import { roleHome, useAuth } from '../../context/AuthContext';
 import { NearBuyWordmark } from '../brand';
 import { Button } from '../ui';
+import { LocationPicker } from '../LocationPicker';
+import { api } from '../../lib/api';
 import type { Role } from '../../types';
 
 interface NavItem {
@@ -23,8 +26,9 @@ interface NavItem {
 }
 
 const CUSTOMER_NAV: NavItem[] = [
-  { label: 'Discover', to: '/discover' },
+  { label: 'Discover', to: '/customer' },
   { label: 'Orders', to: '/orders' },
+  { label: 'Saved', to: '/customer/saved' },
   { label: 'Requests', to: '/requests' },
   { label: 'Account', to: '/account' },
 ];
@@ -34,14 +38,18 @@ const SELLER_NAV: NavItem[] = [
   { label: 'Orders', to: '/seller/orders' },
   { label: 'Products', to: '/seller/products' },
   { label: 'Requests', to: '/seller/requests' },
+  { label: 'Inventory', to: '/seller/inventory' },
+  { label: 'Earnings', to: '/seller/earnings' },
   { label: 'Performance', to: '/seller/performance' },
-  { label: 'Store settings', to: '/seller/store' },
+  { label: 'Store', to: '/seller/store' },
 ];
 
 const RIDER_NAV: NavItem[] = [
   { label: 'Dashboard', to: '/rider' },
-  { label: 'Available jobs', to: '/rider/jobs' },
+  { label: 'Jobs', to: '/rider/jobs' },
+  { label: 'Active', to: '/rider/active' },
   { label: 'History', to: '/rider/history' },
+  { label: 'Earnings', to: '/rider/earnings' },
   { label: 'Profile', to: '/rider/profile' },
 ];
 
@@ -80,6 +88,28 @@ export const AppShell: React.FC<{ children: React.ReactNode; cartCount?: number 
   }, [path]);
 
   const nav = user ? navFor(user.role) : [];
+  const [unread, setUnread] = useState(0);
+
+  useEffect(() => {
+    if (!user) {
+      setUnread(0);
+      return;
+    }
+    let active = true;
+    const load = () =>
+      api
+        .get<{ unreadCount: number }>(`/api/${user.role}/notifications/unread-count`, { silent: true })
+        .then((r) => active && setUnread(r.unreadCount))
+        .catch(() => undefined);
+    load();
+    const timer = window.setInterval(() => document.visibilityState === 'visible' && load(), 30000);
+    window.addEventListener('nearbuy:notifications-changed', load);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('nearbuy:notifications-changed', load);
+    };
+  }, [user, path]);
   const isActive = (to: string) =>
     to === path || (to !== '/' && to !== '/seller' && to !== '/rider' && path.startsWith(`${to}/`)) ||
     (to === '/seller' && path === '/seller') ||
@@ -104,10 +134,14 @@ export const AppShell: React.FC<{ children: React.ReactNode; cartCount?: number 
             >
               <NearBuyWordmark size={32} />
             </Link>
-            <span className="hidden items-center gap-1 text-xs font-medium text-slate-500 lg:flex">
-              <MapPin className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
-              Dwarka, New Delhi
-            </span>
+            {user?.role === 'customer' ? (
+              <LocationPicker />
+            ) : (
+              <span className="hidden items-center gap-1 text-xs font-medium text-slate-500 lg:flex">
+                <MapPin className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+                Dwarka, New Delhi
+              </span>
+            )}
           </div>
 
           {user && (
@@ -146,6 +180,21 @@ export const AppShell: React.FC<{ children: React.ReactNode; cartCount?: number 
               </Link>
             )}
 
+            {user && (
+              <Link
+                to={`/${user.role}/notifications`}
+                aria-label={`Notifications, ${unread} unread`}
+                className="relative inline-flex items-center rounded-lg border border-slate-200 bg-white p-2.5 text-slate-700 hover:bg-slate-50"
+              >
+                <Bell className="h-4 w-4 text-blue-700" aria-hidden="true" />
+                {unread > 0 && (
+                  <span className="absolute -right-1.5 -top-1.5 min-w-[18px] rounded-full bg-red-600 px-1 text-center text-[10px] font-bold leading-[18px] text-white tabular-nums">
+                    {unread > 99 ? '99+' : unread}
+                  </span>
+                )}
+              </Link>
+            )}
+
             {user ? (
               <div className="relative">
                 <button
@@ -174,6 +223,20 @@ export const AppShell: React.FC<{ children: React.ReactNode; cartCount?: number 
                       className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
                     >
                       Profile &amp; settings
+                    </Link>
+                    <Link
+                      to={`/${user.role}/security`}
+                      role="menuitem"
+                      className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      Security
+                    </Link>
+                    <Link
+                      to={`/${user.role}/support`}
+                      role="menuitem"
+                      className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      Help &amp; support
                     </Link>
                     <button
                       type="button"
@@ -276,7 +339,7 @@ export const AppShell: React.FC<{ children: React.ReactNode; cartCount?: number 
               Verified handoff codes
             </span>
             <span>Dwarka, New Delhi</span>
-            <Link to="/discover" className="hover:text-slate-800">
+            <Link to="/customer" className="hover:text-slate-800">
               Discover stores
             </Link>
           </div>

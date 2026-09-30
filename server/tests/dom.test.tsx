@@ -110,12 +110,27 @@ const stubFetch = async (input: any, init?: any) => {
     return json({ ok: true });
   }
 
+  if (path.startsWith('/api/customer/saved')) return json({ items: [] });
+  if (path.startsWith('/api/customer/dashboard')) {
+    return json({
+      stores: [store],
+      categories: [{ category: 'Dairy', slug: 'dairy', count: 3 }],
+      popularProducts: [product],
+      popularBasis: 'orders',
+      activeOrder: null,
+      activeOrderCount: 0,
+      defaultAddress: null,
+    });
+  }
+  if (path.startsWith('/api/customer/notifications/unread-count')) return json({ unreadCount: 0 });
   if (path.startsWith('/api/customer/products')) {
     if (/\/api\/customer\/products\/[^/?]+$/.test(path)) return json({ product, store, related: [] });
     return json({ products: [product] });
   }
   if (path.startsWith('/api/customer/stores')) {
-    if (/\/api\/customer\/stores\/[^/?]+$/.test(path)) return json({ store, products: [product] });
+    if (/\/api\/customer\/stores\/[^/?]+(\?.*)?$/.test(path)) {
+      return json({ store, products: [product], total: 1, hasMore: false, categories: [] });
+    }
     return json({ stores: [store] });
   }
   if (path === '/api/customer/categories') return json({ categories: ['Dairy', 'Staples & Grains'] });
@@ -161,13 +176,14 @@ const stubFetch = async (input: any, init?: any) => {
   if (path === '/api/customer/reservations') return json({ reservations: [] });
   if (path === '/api/customer/stock-requests') return json({ requests: [] });
   if (path === '/api/seller/orders') return json({ orders: [] });
-  if (path === '/api/rider/jobs/available') return json({ jobs: [], upcoming: [] });
+  if (path === '/api/rider/jobs' || path === '/api/rider/jobs/available') return json({ jobs: [], offline: false });
   if (path === '/api/rider/dashboard') {
     return json({
-      rider: { id: 'usr_rider_demo', name: 'Arjun Kumar', onboardingCompleted: true, vehicleType: 'Bike' },
+      rider: { id: 'usr_rider_demo', name: 'Arjun Kumar', onboardingCompleted: true, vehicleType: 'Bike', availability: 'online', accountStatus: 'active' },
       availableCount: 0,
       availableJobs: [],
       activeJob: null,
+      kpis: { todaysDeliveries: 0, todaysEarnings: 0, pendingJobs: 0, completedToday: 0 },
       earnings: { completedJobs: 0, total: 0, today: 0 },
     });
   }
@@ -247,27 +263,47 @@ await suite.test('an authenticated visitor is taken from the gateway to their wo
 });
 
 await suite.test('discovery lists server products and stores', async () => {
-  const view = await renderAt('/discover');
+  const anonymous = await renderAt('/discover');
+  assert.doesNotMatch(anonymous.text, /Amul Taaza Milk 1L/, 'catalogue requires a customer session');
+  anonymous.cleanup();
+
+  const view = await renderAt('/discover', customer);
   assert.match(view.text, /Discover what/);
   assert.match(view.text, /Amul Taaza Milk 1L/);
   assert.match(view.text, /Dwarka Fresh Mart/);
   view.cleanup();
 
-  const storesTab = await renderAt('/discover/stores');
+  const storesTab = await renderAt('/discover/stores', customer);
   assert.match(storesTab.text, /Dwarka Fresh Mart/);
   storesTab.cleanup();
 });
 
 await suite.test('product and store deep links render their detail pages', async () => {
-  const productView = await renderAt('/products/prod_amul_taaza');
+  const productView = await renderAt('/products/prod_amul_taaza', customer);
   assert.match(productView.text, /Amul Taaza Milk 1L/);
   assert.match(productView.text, /68/);
   productView.cleanup();
 
-  const storeView = await renderAt(`/stores/${store.id}`);
+  const storeView = await renderAt(`/stores/${store.id}`, customer);
   assert.match(storeView.text, /Dwarka Fresh Mart/);
-  assert.match(storeView.text, /Available products/);
+  assert.match(storeView.text, /Products \(/);
   storeView.cleanup();
+});
+
+await suite.test('customer home shows live categories, stores and popular products', async () => {
+  const view = await renderAt('/customer', customer);
+  assert.match(view.text, /Shop by category/);
+  assert.match(view.text, /Dairy/);
+  assert.match(view.text, /Popular this month/);
+  assert.match(view.text, /Amul Taaza Milk 1L/);
+  view.cleanup();
+});
+
+await suite.test('rider dashboard shows the online toggle and KPIs from the API', async () => {
+  const view = await renderAt('/rider', rider);
+  assert.match(view.text, /You are online/);
+  assert.match(view.text, /Today's deliveries/);
+  view.cleanup();
 });
 
 await suite.test('role auth pages offer login, demo account, signup and recovery', async () => {
@@ -334,7 +370,7 @@ await suite.test('guarded routes redirect anonymous visitors to the right auth f
 await suite.test('unknown routes render the 404 page instead of crashing', async () => {
   const view = await renderAt('/this/does/not/exist');
   assert.match(view.text, /Page not found/);
-  assert.match(view.text, /Back to discovery/);
+  assert.match(view.text, /Back to home/);
   view.cleanup();
 });
 
@@ -380,7 +416,7 @@ await suite.test('a customer cannot open the seller workspace (client guard)', a
 await suite.test('pages expose accessible names, labels and image alt text', async () => {
   const pages = ['/', '/discover', '/customer/auth', '/seller/auth', '/rider/auth'];
   for (const page of pages) {
-    const view = await renderAt(page);
+    const view = await renderAt(page, page === '/discover' ? customer : undefined);
     const container = document.body.lastElementChild as HTMLElement;
 
     for (const img of Array.from(container.querySelectorAll('img'))) {

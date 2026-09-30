@@ -52,6 +52,15 @@ export interface Store {
   updated_at: string;
   product_count?: number;
   distanceKm?: number | null;
+  isOpen?: boolean;
+  statusLabel?: string;
+  status_message?: string | null;
+  closure_type?: string | null;
+  supports_reservations?: number;
+  fulfilmentMinutes?: { min: number; max: number };
+  fulfilment_min_minutes?: number | null;
+  fulfilment_max_minutes?: number | null;
+  logo?: string | null;
 }
 
 export interface Product {
@@ -75,6 +84,16 @@ export interface Product {
   supports_delivery?: number;
   supports_pickup?: number;
   opening_hours?: string | null;
+  brand?: string | null;
+  unit?: string | null;
+  mrp?: number | null;
+  sku?: string | null;
+  availability?: string;
+  product_info?: string | null;
+  availabilityState?: 'in_stock' | 'low' | 'out_of_stock';
+  availabilityLabel?: string;
+  availabilityDetail?: string;
+  saved?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -178,8 +197,9 @@ export interface Order {
   items: OrderItem[];
   timeline: OrderTimelineEvent[];
   store?: { id: string; name: string; address: string; city: string; phone?: string | null; openingHours?: string | null };
-  /** Customer-only secret; never returned to sellers/riders. */
+  /** Customer-only secret; never returned to sellers/riders. Null until the handoff stage. */
   deliveryCode?: string | null;
+  deliveryCodeState?: 'locked' | 'available' | 'used' | 'unavailable';
   /** Seller-only secret, revealed once the order is packed/ready. */
   pickupCode?: string | null;
   customer?: { name: string; phone: string | null } | null;
@@ -200,12 +220,41 @@ export interface DeliveryJob {
   claimedAt: string | null;
   pickedUpAt: string | null;
   deliveredAt: string | null;
-  store: { id: string; name: string; address: string; city: string; phone?: string | null; openingHours?: string | null };
+  store: {
+    id: string;
+    name: string;
+    address: string;
+    city: string;
+    phone?: string | null;
+    openingHours?: string | null;
+    location?: { lat: number; lng: number } | null;
+  };
   dropCity: string | null;
   dropPincode: string | null;
-  drop: { address?: string; city?: string; pincode?: string; name?: string } | null;
+  drop: {
+    address?: string;
+    area?: string | null;
+    city?: string;
+    pincode?: string;
+    name?: string;
+    instructions?: string | null;
+    location?: { lat: number; lng: number } | null;
+  } | null;
   customerPhone: string | null;
   order?: Order;
+  step?: { current: number; total: number; label: string };
+  distanceKm?: number | null;
+  pickupArea?: string;
+  deliveryArea?: string;
+  pickupStartedAt?: string | null;
+  pickupVerifiedAt?: string | null;
+  outForDeliveryAt?: string | null;
+  arrivedAt?: string | null;
+  openExceptions?: number;
+  events?: { event_type: string; actor_role?: string; note?: string | null; created_at: string }[];
+  exceptions?: { id: string; type: string; note: string | null; status: string; created_at: string }[];
+  items?: { name: string; quantity: number }[];
+  owned?: boolean;
 }
 
 export interface StockRequest {
