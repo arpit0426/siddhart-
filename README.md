@@ -211,6 +211,8 @@ npm run test:unit           # pricing, password policy, codes, state machine, ra
 npm run test:api            # HTTP integration: authz, discovery, idempotency, races, full handoff, restart
 npm run test:portal         # handoff-code secrecy, rider eligibility, multi-store checkout, pickup, store status, reorder, saved, notifications, seller earnings
 npm run test:e2e            # customer / rider / cross-role journeys over the real HTTP API + DB (incl. logout → login persistence)
+npm run test:live           # mounts the real SPA against the real server/DB and renders every page of every portal, failing on any API error or error state
+npm run test:ui             # clicks through the real SPA: login/signup, checkout, seller order flow, rider claim + codes, inventory, store open/close, requests/reservations
 npm run test:dom            # happy-dom render of the real SPA against a stubbed API
 npm run test:routing        # production deep links / assets / JSON 404s (run build first)
 ```
