@@ -480,4 +480,209 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: '010_portal_features',
+    description:
+      'Notifications, saved items, checkout sessions, rider profiles/earnings/settlements/exceptions, support tickets, audit + inventory events, catalogue & address fields',
+    up: (db) => {
+      const addColumns = (table: string, cols: string[]) => {
+        for (const col of cols) {
+          try {
+            db.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`);
+          } catch (err: any) {
+            if (!String(err.message).includes('duplicate column name')) throw err;
+          }
+        }
+      };
+
+      addColumns('users', [`avatar_url TEXT`, `preferences TEXT`]);
+      addColumns('customer_addresses', [
+        `house TEXT`,
+        `street TEXT`,
+        `area TEXT`,
+        `instructions TEXT`,
+        `latitude REAL`,
+        `longitude REAL`,
+      ]);
+      addColumns('products', [
+        `brand TEXT`,
+        `unit TEXT`,
+        `mrp REAL`,
+        `sku TEXT`,
+        `availability TEXT NOT NULL DEFAULT 'available'`,
+        `extra_images TEXT`,
+        `product_info TEXT`,
+      ]);
+      addColumns('stores', [
+        `closure_type TEXT`,
+        `status_message TEXT`,
+        `supports_reservations INTEGER NOT NULL DEFAULT 1`,
+        `logo TEXT`,
+        `legal_name TEXT`,
+        `business_id TEXT`,
+        `business_email TEXT`,
+        `support_phone TEXT`,
+        `fulfilment_min_minutes INTEGER`,
+        `fulfilment_max_minutes INTEGER`,
+      ]);
+      addColumns('orders', [`checkout_id TEXT`, `packed_at TEXT`, `preparing_at TEXT`]);
+      addColumns('reservations', [`requested_for TEXT`]);
+      addColumns('cart_items', [`price_at_add REAL`]);
+      addColumns('delivery_jobs', [`pickup_started_at TEXT`, `out_for_delivery_at TEXT`, `arrived_at TEXT`]);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS notifications (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          body TEXT NOT NULL,
+          link TEXT,
+          read_at TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, read_at);
+
+        CREATE TABLE IF NOT EXISTS saved_items (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT NOT NULL,
+          product_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(customer_id, product_id),
+          FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_items_customer ON saved_items(customer_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS checkout_sessions (
+          id TEXT PRIMARY KEY,
+          customer_id TEXT NOT NULL,
+          idempotency_key TEXT,
+          fulfillment_type TEXT NOT NULL,
+          payment_method TEXT NOT NULL,
+          subtotal REAL NOT NULL,
+          delivery_fee REAL NOT NULL,
+          total REAL NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(customer_id, idempotency_key),
+          FOREIGN KEY (customer_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_orders_checkout ON orders(checkout_id);
+
+        CREATE TABLE IF NOT EXISTS rider_profiles (
+          user_id TEXT PRIMARY KEY,
+          availability TEXT NOT NULL DEFAULT 'offline' CHECK(availability IN ('offline','online')),
+          account_status TEXT NOT NULL DEFAULT 'active' CHECK(account_status IN ('pending','active','suspended','inactive')),
+          service_area TEXT,
+          vehicle_model TEXT,
+          vehicle_verification TEXT NOT NULL DEFAULT 'pending' CHECK(vehicle_verification IN ('pending','verified','rejected')),
+          city TEXT,
+          state TEXT,
+          pincode TEXT,
+          last_online_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        INSERT OR IGNORE INTO rider_profiles (user_id, availability, account_status, created_at, updated_at)
+          SELECT id, 'offline', 'active', created_at, updated_at FROM users WHERE role = 'rider';
+
+        CREATE TABLE IF NOT EXISTS rider_earnings (
+          id TEXT PRIMARY KEY,
+          rider_id TEXT NOT NULL,
+          job_id TEXT NOT NULL UNIQUE,
+          order_id TEXT NOT NULL,
+          amount REAL NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','paid','failed')),
+          settlement_id TEXT,
+          earned_at TEXT NOT NULL,
+          FOREIGN KEY (rider_id) REFERENCES users(id),
+          FOREIGN KEY (job_id) REFERENCES delivery_jobs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rider_earnings_rider ON rider_earnings(rider_id, earned_at DESC);
+        INSERT OR IGNORE INTO rider_earnings (id, rider_id, job_id, order_id, amount, status, earned_at)
+          SELECT 'earn_' || id, rider_id, id, order_id, earnings, 'pending', COALESCE(delivered_at, updated_at)
+          FROM delivery_jobs WHERE status = 'completed' AND rider_id IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS settlements (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('seller','rider')),
+          period_start TEXT NOT NULL,
+          period_end TEXT NOT NULL,
+          amount REAL NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','paid','failed')),
+          reference TEXT,
+          created_at TEXT NOT NULL,
+          paid_at TEXT,
+          FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_settlements_user ON settlements(user_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS delivery_exceptions (
+          id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL,
+          order_id TEXT NOT NULL,
+          rider_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          note TEXT,
+          status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved')),
+          created_at TEXT NOT NULL,
+          resolved_at TEXT,
+          FOREIGN KEY (job_id) REFERENCES delivery_jobs(id),
+          FOREIGN KEY (order_id) REFERENCES orders(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_exceptions_job ON delivery_exceptions(job_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS support_tickets (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          role TEXT NOT NULL,
+          category TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          message TEXT NOT NULL,
+          order_id TEXT,
+          status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','in_progress','resolved')),
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_support_tickets_user ON support_tickets(user_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS audit_events (
+          id TEXT PRIMARY KEY,
+          actor_id TEXT,
+          actor_role TEXT,
+          action TEXT NOT NULL,
+          entity_type TEXT,
+          entity_id TEXT,
+          meta TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_events_entity ON audit_events(entity_type, entity_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS inventory_events (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL,
+          store_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          delta INTEGER NOT NULL,
+          resulting_stock INTEGER NOT NULL,
+          actor_id TEXT,
+          note TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_inventory_events_product ON inventory_events(product_id, created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_products_name ON products(name COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_products_store_pub ON products(store_id, is_published, category);
+        CREATE INDEX IF NOT EXISTS idx_products_price ON products(price);
+        CREATE INDEX IF NOT EXISTS idx_stores_name ON stores(name COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_jobs_available ON delivery_jobs(status, rider_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_handoff_events_type ON handoff_events(order_id, event_type);
+      `);
+    },
+  },
 ];

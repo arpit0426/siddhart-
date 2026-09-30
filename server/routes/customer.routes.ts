@@ -7,8 +7,20 @@ import { ApiError, route } from '../http.js';
 import { AuthenticatedRequest, requireAuth, requireRole } from '../auth.js';
 import { inventoryMap, restock, tryConsumeStock, fulfilHold, releaseHold } from '../inventory.js';
 import { generateHandoffCode, orderNumber, randomId } from '../codes.js';
+import { availabilityFor } from '../catalog.js';
+import {
+  audit,
+  maybeNotifyLowStock,
+  notify,
+  notifyCustomerOfOrder,
+  notifyStoreSeller,
+  recordInventoryEvent,
+} from '../notifications.js';
+import { publicUser } from '../auth.js';
+import { expireReservations } from '../reservations.js';
 import { computeSubtotal, deliveryFeeFor, orderTotal, toRupees } from '../pricing.js';
 import {
+  optionalCoordinate,
   optionalIdempotencyKey,
   optionalString,
   requireEnum,
@@ -17,6 +29,7 @@ import {
   requirePincode,
   requirePlatformId,
   requirePositiveInt,
+  requireUploadUrl,
   requireQuantity,
   requireString,
 } from '../validation.js';
@@ -25,206 +38,14 @@ export const customerRouter = Router();
 
 const FULFILMENT_TYPES = ['delivery', 'pickup'] as const;
 
-/* -------------------------------------------------------------------------- */
-/* Public discovery                                                           */
-/* -------------------------------------------------------------------------- */
-
-function haversineKm(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const R = 6371;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return Math.round(2 * R * Math.asin(Math.sqrt(a)) * 100) / 100;
-}
-
-// GET /api/customer/stores?query=&category=&lat=&lng=
-customerRouter.get(
-  '/stores',
-  route((req, res) => {
-    const query = typeof req.query.query === 'string' ? req.query.query.trim() : '';
-    const category = typeof req.query.category === 'string' ? req.query.category.trim() : '';
-    const lat = req.query.lat ? Number(req.query.lat) : undefined;
-    const lng = req.query.lng ? Number(req.query.lng) : undefined;
-
-    let sql = `
-      SELECT s.*, u.name AS seller_name,
-             (SELECT COUNT(*) FROM products p WHERE p.store_id = s.id AND p.is_published = 1) AS product_count
-      FROM stores s
-      JOIN users u ON s.seller_id = u.id
-      WHERE s.status != 'inactive' AND s.published_at IS NOT NULL`;
-    const params: any[] = [];
-
-    if (query) {
-      sql += ` AND (s.name LIKE ? OR s.description LIKE ? OR s.city LIKE ? OR s.category LIKE ?)`;
-      const like = `%${query}%`;
-      params.push(like, like, like, like);
-    }
-    if (category) {
-      sql += ` AND s.category = ?`;
-      params.push(category);
-    }
-    sql += ` ORDER BY s.name ASC LIMIT 100`;
-
-    const stores = (db.prepare(sql).all(...params) as any[]).map((store) => ({
-      ...store,
-      distanceKm:
-        Number.isFinite(lat) && Number.isFinite(lng) && store.latitude != null && store.longitude != null
-          ? haversineKm(lat as number, lng as number, store.latitude, store.longitude)
-          : null,
-    }));
-
-    stores.sort((a, b) => {
-      if (a.distanceKm == null && b.distanceKm == null) return a.name.localeCompare(b.name);
-      if (a.distanceKm == null) return 1;
-      if (b.distanceKm == null) return -1;
-      return a.distanceKm - b.distanceKm;
-    });
-
-    res.json({ stores });
-  })
-);
-
-// GET /api/customer/categories
-customerRouter.get(
-  '/categories',
-  route((_req, res) => {
-    const rows = db
-      .prepare(
-        `SELECT p.category AS category, COUNT(*) AS count
-         FROM products p JOIN stores s ON p.store_id = s.id
-         WHERE p.is_published = 1 AND s.status != 'inactive' AND s.published_at IS NOT NULL
-         GROUP BY p.category ORDER BY count DESC, p.category ASC`
-      )
-      .all() as any[];
-    res.json({ categories: rows });
-  })
-);
-
-// GET /api/customer/stores/:id
-customerRouter.get(
-  '/stores/:id',
-  route((req, res) => {
-    const store = db
-      .prepare(
-        `SELECT s.*, u.name AS seller_name FROM stores s
-         JOIN users u ON s.seller_id = u.id
-         WHERE s.id = ? AND s.status != 'inactive'`
-      )
-      .get(req.params.id) as any;
-
-    if (!store) throw ApiError.notFound('Store not found.');
-
-    const products = db
-      .prepare(
-        `SELECT p.*, i.stock_quantity, i.reserved_quantity, (i.stock_quantity - i.reserved_quantity) AS sellable
-         FROM products p JOIN inventory i ON i.product_id = p.id
-         WHERE p.store_id = ? AND p.is_published = 1
-         ORDER BY p.category ASC, p.name ASC`
-      )
-      .all(req.params.id) as any[];
-
-    res.json({ store, products });
-  })
-);
-
-// GET /api/customer/products?query=&category=&storeId=&minPrice=&maxPrice=&inStockOnly=&sort=
-customerRouter.get(
-  '/products',
-  route((req, res) => {
-    const query = typeof req.query.query === 'string' ? req.query.query.trim() : '';
-    const category = typeof req.query.category === 'string' ? req.query.category.trim() : '';
-    const storeId = typeof req.query.storeId === 'string' ? req.query.storeId.trim() : '';
-    const minPrice = req.query.minPrice ? Number(req.query.minPrice) : undefined;
-    const maxPrice = req.query.maxPrice ? Number(req.query.maxPrice) : undefined;
-    const inStockOnly = req.query.inStockOnly === 'true';
-    const sort = typeof req.query.sort === 'string' ? req.query.sort : 'name';
-
-    let sql = `
-      SELECT p.*, s.name AS store_name, s.status AS store_status, s.city AS store_city,
-             s.supports_delivery, s.supports_pickup,
-             i.stock_quantity, i.reserved_quantity, (i.stock_quantity - i.reserved_quantity) AS stock
-      FROM products p
-      JOIN stores s ON p.store_id = s.id
-      JOIN inventory i ON i.product_id = p.id
-      WHERE p.is_published = 1 AND s.status != 'inactive' AND s.published_at IS NOT NULL`;
-    const params: any[] = [];
-
-    if (query) {
-      sql += ` AND (p.name LIKE ? OR p.description LIKE ? OR p.category LIKE ? OR s.name LIKE ?)`;
-      const like = `%${query}%`;
-      params.push(like, like, like, like);
-    }
-    if (category) {
-      sql += ` AND p.category = ?`;
-      params.push(category);
-    }
-    if (storeId) {
-      sql += ` AND p.store_id = ?`;
-      params.push(storeId);
-    }
-    if (Number.isFinite(minPrice)) {
-      sql += ` AND p.price >= ?`;
-      params.push(minPrice);
-    }
-    if (Number.isFinite(maxPrice)) {
-      sql += ` AND p.price <= ?`;
-      params.push(maxPrice);
-    }
-    if (inStockOnly) {
-      sql += ` AND (i.stock_quantity - i.reserved_quantity) > 0`;
-    }
-
-    const sorts: Record<string, string> = {
-      name: 'p.name ASC',
-      price_asc: 'p.price ASC',
-      price_desc: 'p.price DESC',
-      newest: 'p.created_at DESC',
-    };
-    sql += ` ORDER BY ${sorts[sort] || sorts.name} LIMIT 200`;
-
-    res.json({ products: db.prepare(sql).all(...params) });
-  })
-);
-
-// GET /api/customer/products/:id
-customerRouter.get(
-  '/products/:id',
-  route((req, res) => {
-    const product = db
-      .prepare(
-        `SELECT p.*, s.name AS store_name, s.address AS store_address, s.city AS store_city,
-                s.status AS store_status, s.opening_hours, s.supports_delivery, s.supports_pickup,
-                i.stock_quantity, i.reserved_quantity, (i.stock_quantity - i.reserved_quantity) AS stock
-         FROM products p
-         JOIN stores s ON p.store_id = s.id
-         JOIN inventory i ON i.product_id = p.id
-         WHERE p.id = ? AND s.status != 'inactive'`
-      )
-      .get(req.params.id) as any;
-
-    if (!product) throw ApiError.notFound('Product not found.');
-    res.json({ product });
-  })
-);
+// Every customer endpoint - including store/product discovery - requires an
+// authenticated CUSTOMER session. Ownership is enforced per resource below.
+customerRouter.use(requireAuth, requireRole('customer'));
 
 /* -------------------------------------------------------------------------- */
 /* Cart (authenticated customer only)                                         */
 /* -------------------------------------------------------------------------- */
 
-customerRouter.use('/cart', requireAuth, requireRole('customer'));
-customerRouter.use('/addresses', requireAuth, requireRole('customer'));
-customerRouter.use('/checkout', requireAuth, requireRole('customer'));
-customerRouter.use('/orders', requireAuth, requireRole('customer'));
-customerRouter.use('/reservations', requireAuth, requireRole('customer'));
-customerRouter.use('/stock-requests', requireAuth, requireRole('customer'));
 
 function ensureCart(customerId: string): string {
   const existing = db.prepare(`SELECT id FROM carts WHERE customer_id = ?`).get(customerId) as any;
@@ -244,10 +65,10 @@ function cartPayload(customerId: string) {
   const cartId = ensureCart(customerId);
   const items = db
     .prepare(
-      `SELECT ci.id, ci.quantity, p.id AS product_id, p.name, p.price, p.category, p.image,
-              p.is_published, p.store_id, s.name AS store_name, s.status AS store_status,
+      `SELECT ci.id, ci.quantity, ci.price_at_add, p.id AS product_id, p.name, p.price, p.category, p.image,
+              p.is_published, p.availability, p.unit, p.store_id, s.name AS store_name, s.status AS store_status,
               s.supports_delivery, s.supports_pickup,
-              i.stock_quantity, i.reserved_quantity,
+              i.stock_quantity, i.reserved_quantity, i.low_stock_threshold,
               (i.stock_quantity - i.reserved_quantity) AS stock
        FROM cart_items ci
        JOIN products p ON ci.product_id = p.id
@@ -273,25 +94,53 @@ function cartPayload(customerId: string) {
     }
     const group = groups.get(item.store_id)!;
     const lineTotal = toRupees(item.price * item.quantity);
-    group.items.push({ ...item, lineTotal, issue: itemIssue(item) });
+    const priceChanged =
+      item.price_at_add != null && Math.abs(item.price_at_add - item.price) > 0.001
+        ? { from: item.price_at_add, to: item.price }
+        : null;
+    const issue = itemIssue(item);
+    group.items.push({
+      ...item,
+      lineTotal,
+      issue,
+      availabilityState: availabilityFor({
+        sellable: item.stock,
+        threshold: item.low_stock_threshold,
+        availability: item.availability,
+        isPublished: item.is_published,
+      }).state,
+      priceChanged,
+      warning: priceChanged
+        ? `The price of ${item.name} changed from ${formatRupees(priceChanged.from)} to ${formatRupees(priceChanged.to)}. Please review your cart.`
+        : null,
+    });
     group.subtotal = toRupees(group.subtotal + lineTotal);
   }
 
   const stores = [...groups.values()].map((group) => ({
     ...group,
     deliveryFee: deliveryFeeFor({ fulfilmentType: 'delivery', subtotal: group.subtotal }),
+    storeClosed: group.storeStatus !== 'open',
+    blocked: group.storeStatus !== 'open' || group.items.some((item: any) => item.issue),
   }));
 
   const subtotal = toRupees(stores.reduce((sum, group) => sum + group.subtotal, 0));
-  return { cartId, items, stores, subtotal };
+  const deliveryFee = toRupees(stores.reduce((sum, group) => sum + group.deliveryFee, 0));
+  return { cartId, items, stores, subtotal, deliveryFee, total: toRupees(subtotal + deliveryFee) };
+}
+
+function formatRupees(value: number): string {
+  return `₹${toRupees(value)}`;
 }
 
 function itemIssue(item: any): string | null {
-  if (!item.is_published) return 'This item is no longer available.';
+  if (!item.is_published) return 'This product is no longer available.';
   if (item.store_status === 'inactive') return 'This store is not accepting orders.';
-  if (item.stock <= 0) return 'This item is now out of stock. Please update your cart.';
+  if (item.store_status === 'closed') return 'This store is currently closed. Checkout is unavailable.';
+  if (item.availability && item.availability !== 'available') return 'This product is no longer available.';
+  if (item.stock <= 0) return 'This product is no longer available in the requested quantity.';
   if (item.quantity > item.stock) {
-    return `Only ${item.stock} unit(s) left in stock. Please update the quantity.`;
+    return `Only ${item.stock} unit${item.stock === 1 ? ' is' : 's are'} currently available.`;
   }
   return null;
 }
@@ -305,6 +154,8 @@ customerRouter.get(
       items: payload.items,
       stores: payload.stores,
       subtotal: payload.subtotal,
+      deliveryFee: payload.deliveryFee,
+      total: payload.total,
     });
   })
 );
@@ -319,7 +170,7 @@ customerRouter.post(
 
     const product = db
       .prepare(
-        `SELECT p.id, p.name, p.is_published, s.status AS store_status,
+        `SELECT p.id, p.name, p.is_published, p.availability, p.price, s.status AS store_status,
                 i.stock_quantity - i.reserved_quantity AS stock
          FROM products p
          JOIN stores s ON p.store_id = s.id
@@ -329,7 +180,9 @@ customerRouter.post(
       .get(productId) as any;
 
     if (!product) throw ApiError.notFound('Product not found.');
-    if (!product.is_published) throw ApiError.badRequest('This product is no longer available.');
+    if (!product.is_published || product.availability !== 'available') {
+      throw ApiError.badRequest('This product is no longer available.');
+    }
     if (product.store_status === 'inactive') {
       throw ApiError.badRequest('This store is not accepting orders right now.');
     }
@@ -356,22 +209,41 @@ customerRouter.post(
       .get(cartId, productId) as any;
 
     if (existing) {
-      db.prepare(`UPDATE cart_items SET quantity = ?, updated_at = ? WHERE id = ?`).run(
-        quantity,
-        now,
-        existing.id
-      );
+      // The customer is actively editing the line, so they have seen the current price.
+      db.prepare(
+        `UPDATE cart_items SET quantity = ?, price_at_add = ?, updated_at = ? WHERE id = ?`
+      ).run(quantity, product.price, now, existing.id);
     } else {
       db.prepare(
-        `INSERT INTO cart_items (id, cart_id, product_id, quantity, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(randomId('ci'), cartId, productId, quantity, now, now);
+        `INSERT INTO cart_items (id, cart_id, product_id, quantity, price_at_add, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(randomId('ci'), cartId, productId, quantity, product.price, now, now);
     }
 
     db.prepare(`UPDATE carts SET updated_at = ? WHERE id = ?`).run(now, cartId);
 
     const payload = cartPayload(customerId);
     res.json({ message: 'Cart updated.', items: payload.items, subtotal: payload.subtotal });
+  })
+);
+
+customerRouter.delete(
+  '/cart/items/:productId',
+  route((req: AuthenticatedRequest, res) => {
+    const cartId = ensureCart(req.user!.id);
+    db.prepare(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`).run(cartId, req.params.productId);
+    res.json({ message: 'Item removed from cart.' });
+  })
+);
+
+customerRouter.delete(
+  '/cart/stores/:storeId',
+  route((req: AuthenticatedRequest, res) => {
+    const cartId = ensureCart(req.user!.id);
+    db.prepare(
+      `DELETE FROM cart_items WHERE cart_id = ? AND product_id IN (SELECT id FROM products WHERE store_id = ?)`
+    ).run(cartId, req.params.storeId);
+    res.json({ message: 'Store items removed from cart.' });
   })
 );
 
@@ -401,18 +273,52 @@ customerRouter.get(
   })
 );
 
+function parseAddressBody(body: any, existing?: any) {
+  const pick = (key: string, fallback: any) => (body?.[key] !== undefined ? body[key] : fallback);
+  const house = optionalString(pick('house', existing?.house), 'House / building', { max: 120 }) || '';
+  const street = optionalString(pick('street', existing?.street), 'Street', { max: 120 }) || '';
+  const area = optionalString(pick('area', existing?.area), 'Area', { max: 120 }) || '';
+  const composed = [house, street, area].filter(Boolean).join(', ');
+  const addressLine = requireString(
+    body?.addressLine !== undefined ? body.addressLine : composed || existing?.address_line,
+    'Address',
+    { min: 5, max: 240 }
+  );
+  const latitude = optionalCoordinate(pick('latitude', existing?.latitude), 'Latitude', { min: -90, max: 90 });
+  const longitude = optionalCoordinate(pick('longitude', existing?.longitude), 'Longitude', { min: -180, max: 180 });
+  if ((latitude == null) !== (longitude == null)) {
+    throw ApiError.badRequest('Provide both latitude and longitude, or neither.');
+  }
+  return {
+    recipientName: requireString(pick('recipientName', existing?.recipient_name), 'Full name', { min: 2, max: 80 }),
+    phone: requirePhone(pick('phone', existing?.phone), 'Contact phone'),
+    addressLine,
+    house,
+    street,
+    area,
+    city: requireString(pick('city', existing?.city) || 'Dwarka, New Delhi', 'City', { min: 2, max: 80 }),
+    state: optionalString(pick('state', existing?.state), 'State', { max: 80 }) || 'Delhi',
+    pincode: requirePincode(pick('pincode', existing?.pincode)),
+    label: requireEnum(
+      optionalString(pick('label', existing?.label), 'Label', { max: 30 }) || 'Home',
+      'Address label',
+      ['Home', 'Work', 'Other'] as const
+    ),
+    instructions: optionalString(pick('instructions', existing?.instructions), 'Delivery instructions', { max: 240 }) || null,
+    latitude: latitude ?? null,
+    longitude: longitude ?? null,
+  };
+}
+
 customerRouter.post(
   '/addresses',
   route((req: AuthenticatedRequest, res) => {
     const customerId = req.user!.id;
-    const recipientName = requireString(req.body?.recipientName, 'Recipient name', { min: 2, max: 80 });
-    const phone = requirePhone(req.body?.phone, 'Contact phone');
-    const addressLine = requireString(req.body?.addressLine, 'Address', { min: 5, max: 240 });
-    const city = requireString(req.body?.city ?? 'Dwarka, New Delhi', 'City', { min: 2, max: 80 });
-    const state = optionalString(req.body?.state, 'State', { max: 80 }) || 'Delhi';
-    const pincode = requirePincode(req.body?.pincode);
-    const label = optionalString(req.body?.label, 'Label', { max: 30 }) || 'Home';
-    const isDefault = req.body?.isDefault ? 1 : 0;
+    const a = parseAddressBody(req.body);
+    const count = (db.prepare(`SELECT COUNT(*) AS c FROM customer_addresses WHERE customer_id = ?`).get(customerId) as any).c;
+    if (count >= 10) throw ApiError.badRequest('You can save up to 10 addresses. Remove one to add another.');
+    // The first address is always the default.
+    const isDefault = req.body?.isDefault || count === 0 ? 1 : 0;
     const id = randomId('addr');
     const now = new Date().toISOString();
 
@@ -422,9 +328,13 @@ customerRouter.post(
       }
       db.prepare(
         `INSERT INTO customer_addresses
-         (id, customer_id, label, recipient_name, phone, address_line, city, state, pincode, is_default, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(id, customerId, label, recipientName, phone, addressLine, city, state, pincode, isDefault, now);
+         (id, customer_id, label, recipient_name, phone, address_line, house, street, area, city, state, pincode,
+          instructions, latitude, longitude, is_default, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        id, customerId, a.label, a.recipientName, a.phone, a.addressLine, a.house, a.street, a.area,
+        a.city, a.state, a.pincode, a.instructions, a.latitude, a.longitude, isDefault, now
+      );
     });
 
     res.status(201).json({ id, message: 'Address saved.' });
@@ -438,19 +348,7 @@ customerRouter.put(
       .prepare(`SELECT * FROM customer_addresses WHERE id = ? AND customer_id = ?`)
       .get(req.params.id, req.user!.id) as any;
     if (!address) throw ApiError.notFound('Address not found.');
-
-    const recipientName = requireString(req.body?.recipientName ?? address.recipient_name, 'Recipient name', {
-      min: 2,
-      max: 80,
-    });
-    const addressLine = requireString(req.body?.addressLine ?? address.address_line, 'Address', {
-      min: 5,
-      max: 240,
-    });
-    const pincode = requirePincode(req.body?.pincode ?? address.pincode);
-    const label = optionalString(req.body?.label, 'Label', { max: 30 }) ?? address.label;
-    const phone = req.body?.phone ? requirePhone(req.body.phone, 'Contact phone') : address.phone;
-    const city = optionalString(req.body?.city, 'City', { max: 80 }) ?? address.city;
+    const a = parseAddressBody(req.body, address);
     const isDefault = req.body?.isDefault === undefined ? address.is_default : req.body.isDefault ? 1 : 0;
 
     withTransaction(() => {
@@ -459,22 +357,53 @@ customerRouter.put(
       }
       db.prepare(
         `UPDATE customer_addresses
-         SET label = ?, recipient_name = ?, phone = ?, address_line = ?, city = ?, pincode = ?, is_default = ?
+         SET label = ?, recipient_name = ?, phone = ?, address_line = ?, house = ?, street = ?, area = ?, city = ?,
+             state = ?, pincode = ?, instructions = ?, latitude = ?, longitude = ?, is_default = ?
          WHERE id = ? AND customer_id = ?`
-      ).run(label, recipientName, phone, addressLine, city, pincode, isDefault, req.params.id, req.user!.id);
+      ).run(
+        a.label, a.recipientName, a.phone, a.addressLine, a.house, a.street, a.area, a.city, a.state, a.pincode,
+        a.instructions, a.latitude, a.longitude, isDefault, req.params.id, req.user!.id
+      );
     });
 
     res.json({ message: 'Address updated.' });
   })
 );
 
+customerRouter.post(
+  '/addresses/:id/default',
+  route((req: AuthenticatedRequest, res) => {
+    const owned = db
+      .prepare(`SELECT id FROM customer_addresses WHERE id = ? AND customer_id = ?`)
+      .get(req.params.id, req.user!.id);
+    if (!owned) throw ApiError.notFound('Address not found.');
+    withTransaction(() => {
+      db.prepare(`UPDATE customer_addresses SET is_default = 0 WHERE customer_id = ?`).run(req.user!.id);
+      db.prepare(`UPDATE customer_addresses SET is_default = 1 WHERE id = ? AND customer_id = ?`).run(
+        req.params.id,
+        req.user!.id
+      );
+    });
+    res.json({ message: 'Default address updated.' });
+  })
+);
+
 customerRouter.delete(
   '/addresses/:id',
   route((req: AuthenticatedRequest, res) => {
-    const result = db
-      .prepare(`DELETE FROM customer_addresses WHERE id = ? AND customer_id = ?`)
-      .run(req.params.id, req.user!.id);
-    if (result.changes === 0) throw ApiError.notFound('Address not found.');
+    const address = db
+      .prepare(`SELECT is_default FROM customer_addresses WHERE id = ? AND customer_id = ?`)
+      .get(req.params.id, req.user!.id) as any;
+    if (!address) throw ApiError.notFound('Address not found.');
+    withTransaction(() => {
+      db.prepare(`DELETE FROM customer_addresses WHERE id = ? AND customer_id = ?`).run(req.params.id, req.user!.id);
+      if (address.is_default) {
+        db.prepare(
+          `UPDATE customer_addresses SET is_default = 1 WHERE id = (
+             SELECT id FROM customer_addresses WHERE customer_id = ? ORDER BY created_at DESC LIMIT 1)`
+        ).run(req.user!.id);
+      }
+    });
     res.json({ message: 'Address removed.' });
   })
 );
@@ -521,12 +450,16 @@ function buildCheckoutPlan(customerId: string, rawItems: unknown, fulfilmentType
       issues.push('One of the items in your cart is no longer available.');
       continue;
     }
-    if (!product.is_published) {
+    if (!product.is_published || product.availability !== 'available') {
       issues.push(`${product.name} is no longer available at ${product.store_name}.`);
       continue;
     }
     if (product.store_status === 'inactive' || !product.published_at) {
       issues.push(`${product.store_name} is not accepting orders right now.`);
+      continue;
+    }
+    if (product.store_status === 'closed') {
+      issues.push(`${product.store_name} is currently closed. Checkout is unavailable.`);
       continue;
     }
     if (fulfilmentType === 'delivery' && !product.supports_delivery) {
@@ -659,7 +592,8 @@ customerRouter.post(
     if (idempotencyKey) {
       const previous = db
         .prepare(
-          `SELECT id FROM orders WHERE idempotency_key = ? AND customer_id = ? ORDER BY created_at ASC`
+          `SELECT o.id FROM orders o JOIN checkout_sessions cs ON cs.id = o.checkout_id
+           WHERE cs.idempotency_key = ? AND cs.customer_id = ? ORDER BY o.created_at ASC`
         )
         .all(idempotencyKey, customerId) as any[];
       if (previous.length > 0) {
@@ -667,7 +601,7 @@ customerRouter.post(
         res.json({
           message: 'This order was already placed. Showing your existing order(s).',
           idempotent: true,
-          orders: previous.map((row) => hydrateOrder(row.id, 'customer')),
+          ...checkoutPayload(previous.map((row) => row.id)),
         });
         return;
       }
@@ -684,9 +618,13 @@ customerRouter.post(
         name: address.recipient_name,
         phone: address.phone,
         address: address.address_line,
+        area: address.area || null,
         city: address.city,
         state: address.state,
         pincode: address.pincode,
+        instructions: address.instructions || null,
+        latitude: address.latitude ?? null,
+        longitude: address.longitude ?? null,
       };
     }
 
@@ -697,11 +635,26 @@ customerRouter.post(
     if (plan.storePlans.length === 0) {
       throw ApiError.badRequest('There is nothing to check out.', 'empty_checkout');
     }
+    // The customer confirmed a specific total; if live prices/fees moved, stop and let them review.
+    const expectedTotal = req.body?.expectedTotal;
+    if (expectedTotal !== undefined && expectedTotal !== null && Math.abs(Number(expectedTotal) - plan.total) > 0.009) {
+      throw ApiError.conflict(
+        'Prices or delivery fees changed since you last reviewed your cart. Please review the updated total.',
+        'price_changed'
+      );
+    }
 
     try {
       const created = withTransaction(() => {
         const now = new Date().toISOString();
         const orders: any[] = [];
+        const checkoutId = randomId('chk');
+        db.prepare(
+          `INSERT INTO checkout_sessions (id, customer_id, idempotency_key, fulfillment_type, payment_method,
+             subtotal, delivery_fee, total, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(checkoutId, customerId, idempotencyKey ?? null, fulfilmentType, paymentMethod,
+          plan.subtotal, plan.deliveryFee, plan.total, now);
 
         for (const group of plan.storePlans) {
           // Atomic stock consumption: if a concurrent buyer took the last unit,
@@ -724,7 +677,7 @@ customerRouter.post(
             `INSERT INTO orders (
                id, order_number, customer_id, store_id, status, fulfillment_type,
                subtotal, delivery_fee, total, payment_method, address_snapshot,
-               pickup_code, delivery_code, idempotency_key,
+               pickup_code, delivery_code, checkout_id,
                store_name_snapshot, store_address_snapshot, created_at, updated_at
              ) VALUES (?, ?, ?, ?, 'placed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(
@@ -740,7 +693,7 @@ customerRouter.post(
             JSON.stringify(addressSnapshot ?? { pickup: true, store: group.storeName }),
             pickupCode,
             deliveryCode,
-            idempotencyKey ?? null,
+            checkoutId,
             group.storeName,
             `${group.storeAddress}, ${group.storeCity}`,
             now,
@@ -748,6 +701,15 @@ customerRouter.post(
           );
 
           for (const line of group.lines) {
+            recordInventoryEvent({
+              productId: line.productId,
+              storeId: group.storeId,
+              type: 'checkout',
+              delta: -line.quantity,
+              actorId: customerId,
+              note: `Order ${number}`,
+            });
+            maybeNotifyLowStock(line.productId);
             db.prepare(
               `INSERT INTO order_items (id, order_id, product_id, product_name, unit_price, quantity, line_total, product_image)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
@@ -766,14 +728,23 @@ customerRouter.post(
           if (fulfilmentType === 'delivery') {
             db.prepare(
               `INSERT INTO delivery_jobs (id, order_id, status, earnings, created_at, updated_at)
-               VALUES (?, ?, 'available', 40, ?, ?)`
-            ).run(randomId('job'), orderId, now, now);
+               VALUES (?, ?, 'available', ?, ?, ?)`
+            ).run(randomId('job'), orderId, config.riderPayoutPerDelivery, now, now);
           }
 
           db.prepare(
             `INSERT INTO handoff_events (id, order_id, event_type, actor_role, actor_id, note, created_at)
              VALUES (?, ?, 'ORDER_PLACED', 'customer', ?, 'Order placed', ?)`
           ).run(randomId('he'), orderId, customerId, now);
+
+          notifyCustomerOfOrder(customerId, orderId, number, 'placed');
+          notifyStoreSeller(
+            group.storeId,
+            'order',
+            `New order #${number}`,
+            `${group.lines.length} item${group.lines.length === 1 ? '' : 's'} · ${fulfilmentType === 'pickup' ? 'Pickup' : 'Delivery'} · ₹${group.total}. Accept it to start preparing.`,
+            `/seller/orders/${orderId}`
+          );
 
           orders.push({
             id: orderId,
@@ -814,19 +785,22 @@ customerRouter.post(
           created.length > 1
             ? `${created.length} store orders placed successfully.`
             : 'Order placed successfully.',
-        orders: created.map((order) => hydrateOrder(order.id, 'customer')),
+        ...checkoutPayload(created.map((order) => order.id)),
       });
     } catch (error: any) {
       if (error instanceof ApiError) throw error;
-      if (String(error?.message || '').includes('UNIQUE constraint failed: orders.idempotency_key')) {
+      if (String(error?.message || '').includes('UNIQUE constraint failed: checkout_sessions')) {
         // Two identical requests raced: return the winner's orders.
         const previous = db
-          .prepare(`SELECT id FROM orders WHERE idempotency_key = ? AND customer_id = ?`)
+          .prepare(
+            `SELECT o.id FROM orders o JOIN checkout_sessions cs ON cs.id = o.checkout_id
+             WHERE cs.idempotency_key = ? AND cs.customer_id = ? ORDER BY o.created_at ASC`
+          )
           .all(String(idempotencyKey), customerId) as any[];
         res.json({
           message: 'This order was already placed. Showing your existing order(s).',
           idempotent: true,
-          orders: previous.map((row) => hydrateOrder(row.id, 'customer')),
+          ...checkoutPayload(previous.map((row) => row.id)),
         });
         return;
       }
@@ -840,6 +814,21 @@ customerRouter.post(
 /* Orders                                                                     */
 /* -------------------------------------------------------------------------- */
 
+/** Orders created by one checkout, plus the checkout-level totals. */
+function checkoutPayload(orderIds: string[]) {
+  const orders = orderIds.map((id) => hydrateOrder(id, 'customer'));
+  const checkoutId = orders[0]?.checkoutId ?? null;
+  return {
+    checkoutId,
+    orders,
+    summary: {
+      subtotal: toRupees(orders.reduce((sum, o: any) => sum + o.subtotal, 0)),
+      deliveryFee: toRupees(orders.reduce((sum, o: any) => sum + o.deliveryFee, 0)),
+      total: toRupees(orders.reduce((sum, o: any) => sum + o.total, 0)),
+    },
+  };
+}
+
 /**
  * Role-scoped order hydration. Each role receives only the fields and secrets it
  * is authorised to see (customer: delivery code; seller: pickup code after pack;
@@ -849,7 +838,7 @@ export function hydrateOrder(orderId: string, viewer: 'customer' | 'seller' | 'r
   const order = db
     .prepare(
       `SELECT o.*, s.name AS store_name, s.address AS store_address, s.city AS store_city,
-              s.contact_phone AS store_phone, s.opening_hours,
+              s.contact_phone AS store_phone, s.opening_hours, s.image AS store_image,
               u.name AS customer_name, u.phone AS customer_phone,
               dj.id AS job_id, dj.status AS job_status, dj.earnings AS job_earnings,
               dj.claimed_at, dj.picked_up_at, dj.delivered_at,
@@ -873,6 +862,7 @@ export function hydrateOrder(orderId: string, viewer: 'customer' | 'seller' | 'r
   const base = {
     id: order.id,
     orderNumber: order.order_number,
+    checkoutId: order.checkout_id,
     status: order.status,
     fulfillmentType: order.fulfillment_type,
     subtotal: order.subtotal,
@@ -883,6 +873,8 @@ export function hydrateOrder(orderId: string, viewer: 'customer' | 'seller' | 'r
     updatedAt: order.updated_at,
     address: JSON.parse(order.address_snapshot || '{}'),
     acceptedAt: order.accepted_at,
+    preparingAt: order.preparing_at,
+    packedAt: order.packed_at,
     readyAt: order.ready_at,
     pickedUpAt: order.picked_up_at,
     deliveredAt: order.delivered_at,
@@ -900,6 +892,19 @@ export function hydrateOrder(orderId: string, viewer: 'customer' | 'seller' | 'r
   };
 
   if (viewer === 'customer') {
+    // The delivery code is a secret released only at the handoff stage:
+    //   delivery orders -> while out for delivery; pickup orders -> while ready for collection.
+    const codeStage =
+      order.fulfillment_type === 'pickup'
+        ? order.status === 'ready_for_pickup'
+        : order.status === 'out_for_delivery';
+    const codeState = ['cancelled', 'rejected'].includes(order.status)
+      ? 'unavailable'
+      : order.status === 'delivered'
+        ? 'used'
+        : codeStage
+          ? 'available'
+          : 'locked';
     return {
       ...base,
       store: {
@@ -908,11 +913,12 @@ export function hydrateOrder(orderId: string, viewer: 'customer' | 'seller' | 'r
         address: order.store_address,
         city: order.store_city,
         phone: order.store_phone,
+        image: order.store_image,
       },
-      deliveryCode: order.delivery_code,
-      rider: order.rider_name
-        ? { name: order.rider_name, phone: order.rider_phone, status: order.job_status }
-        : null,
+      deliveryCode: codeState === 'available' ? order.delivery_code : null,
+      deliveryCodeState: codeState,
+      // Only a first name + initial; no rider phone number or live location.
+      rider: order.rider_name ? { name: shortName(order.rider_name), status: order.job_status } : null,
       jobStatus: order.job_status,
     };
   }
@@ -956,6 +962,11 @@ export function hydrateOrder(orderId: string, viewer: 'customer' | 'seller' | 'r
   return { ...base, pickupCode: order.pickup_code, deliveryCode: order.delivery_code };
 }
 
+function shortName(full: string): string {
+  const parts = String(full).trim().split(/\s+/);
+  return parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.` : parts[0];
+}
+
 function pickupCodeRevealedForOrder(status: string): boolean {
   return ['ready_for_pickup', 'picked_up', 'out_for_delivery', 'delivered'].includes(status);
 }
@@ -963,10 +974,49 @@ function pickupCodeRevealedForOrder(status: string): boolean {
 customerRouter.get(
   '/orders',
   route((req: AuthenticatedRequest, res) => {
+    const tab = typeof req.query.tab === 'string' ? req.query.tab : '';
+    const groups: Record<string, string[]> = {
+      active: ['placed', 'accepted', 'preparing', 'packed', 'ready_for_pickup', 'picked_up', 'out_for_delivery'],
+      completed: ['delivered'],
+      cancelled: ['cancelled', 'rejected'],
+    };
+    const statuses = groups[tab];
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(req.query.pageSize) || 25));
+    const where = `customer_id = ?${statuses ? ` AND status IN (${statuses.map(() => '?').join(',')})` : ''}`;
+    const args = [req.user!.id, ...(statuses ?? [])];
+    const total = (db.prepare(`SELECT COUNT(*) AS c FROM orders WHERE ${where}`).get(...args) as any).c;
     const rows = db
-      .prepare(`SELECT id FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 100`)
-      .all(req.user!.id) as any[];
-    res.json({ orders: rows.map((row) => hydrateOrder(row.id, 'customer')) });
+      .prepare(`SELECT id FROM orders WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+      .all(...args, pageSize, (page - 1) * pageSize) as any[];
+    const counts = db
+      .prepare(
+        `SELECT SUM(status IN ('delivered')) AS completed,
+                SUM(status IN ('cancelled','rejected')) AS cancelled,
+                SUM(status NOT IN ('delivered','cancelled','rejected')) AS active
+         FROM orders WHERE customer_id = ?`
+      )
+      .get(req.user!.id) as any;
+    res.json({
+      orders: rows.map((row) => hydrateOrder(row.id, 'customer')),
+      total,
+      page,
+      pageSize,
+      hasMore: page * pageSize < total,
+      counts: { active: counts.active ?? 0, completed: counts.completed ?? 0, cancelled: counts.cancelled ?? 0 },
+    });
+  })
+);
+
+// All store orders created by one checkout, viewable together.
+customerRouter.get(
+  '/checkouts/:id',
+  route((req: AuthenticatedRequest, res) => {
+    const rows = db
+      .prepare(`SELECT id FROM orders WHERE checkout_id = ? AND customer_id = ? ORDER BY created_at ASC`)
+      .all(req.params.id, req.user!.id) as any[];
+    if (rows.length === 0) throw ApiError.notFound('Checkout not found.');
+    res.json(checkoutPayload(rows.map((r) => r.id)));
   })
 );
 
@@ -1000,7 +1050,17 @@ customerRouter.post(
     withTransaction(() => {
       const now = new Date().toISOString();
       const items = db.prepare(`SELECT product_id, quantity FROM order_items WHERE order_id = ?`).all(order.id) as any[];
-      for (const item of items) restock(item.product_id, item.quantity);
+      for (const item of items) {
+        restock(item.product_id, item.quantity);
+        recordInventoryEvent({
+          productId: item.product_id,
+          storeId: order.store_id,
+          type: 'cancellation',
+          delta: item.quantity,
+          actorId: req.user!.id,
+          note: `Order ${order.order_number} cancelled by customer`,
+        });
+      }
 
       db.prepare(
         `UPDATE orders SET status = 'cancelled', cancelled_reason = ?, cancelled_by = 'customer', updated_at = ? WHERE id = ?`
@@ -1014,6 +1074,15 @@ customerRouter.post(
         `INSERT INTO handoff_events (id, order_id, event_type, actor_role, actor_id, note, created_at)
          VALUES (?, ?, 'ORDER_CANCELLED', 'customer', ?, 'Order cancelled by customer', ?)`
       ).run(randomId('he'), order.id, req.user!.id, now);
+
+      notifyCustomerOfOrder(req.user!.id, order.id, order.order_number, 'cancelled');
+      notifyStoreSeller(
+        order.store_id,
+        'order',
+        `Order #${order.order_number} cancelled`,
+        'The customer cancelled this order before acceptance.',
+        `/seller/orders/${order.id}`
+      );
     });
 
     res.json({ message: 'Order cancelled and stock returned to the store.', order: hydrateOrder(order.id, 'customer') });
@@ -1027,7 +1096,7 @@ customerRouter.post(
 function productForRequest(productId: string) {
   const product = db
     .prepare(
-      `SELECT p.*, s.status AS store_status, s.published_at,
+      `SELECT p.*, s.name AS store_name, s.status AS store_status, s.published_at, s.supports_reservations,
               i.stock_quantity, i.reserved_quantity, (i.stock_quantity - i.reserved_quantity) AS sellable
        FROM products p JOIN stores s ON p.store_id = s.id
        JOIN inventory i ON i.product_id = p.id
@@ -1054,6 +1123,13 @@ customerRouter.post(
       `INSERT INTO stock_requests (id, customer_id, store_id, product_id, requested_quantity, status, note, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
     ).run(id, req.user!.id, product.store_id, product.id, quantity, note || null, now, now);
+    notifyStoreSeller(
+      product.store_id,
+      'stock_request',
+      'Customer asked about stock',
+      `${req.user!.name.split(' ')[0]} asked if ${product.name} × ${quantity} is available.`,
+      '/seller/stock-requests'
+    );
 
     res.status(201).json({
       id,
@@ -1087,6 +1163,20 @@ customerRouter.post(
     const product = productForRequest(requirePlatformId(req.body?.productId, 'Product'));
     const quantity = requireQuantity(req.body?.requestedQuantity ?? 1, 'Requested quantity');
 
+    if (!product.supports_reservations) {
+      throw ApiError.badRequest('This store does not accept reservations.', 'reservations_unsupported');
+    }
+    let requestedFor: string | null = null;
+    if (req.body?.requestedFor) {
+      const when = new Date(String(req.body.requestedFor));
+      if (Number.isNaN(when.getTime())) throw ApiError.badRequest('Please choose a valid pickup time.');
+      if (when.getTime() < Date.now() - 60_000) throw ApiError.badRequest('Pickup time must be in the future.');
+      if (when.getTime() > Date.now() + 7 * 24 * 3600 * 1000) {
+        throw ApiError.badRequest('Reservations can be requested up to 7 days ahead.');
+      }
+      requestedFor = when.toISOString();
+    }
+
     const existing = db
       .prepare(
         `SELECT id FROM reservations WHERE customer_id = ? AND product_id = ? AND status = 'pending'`
@@ -1100,8 +1190,8 @@ customerRouter.post(
     const id = randomId('res');
     db.prepare(
       `INSERT INTO reservations
-       (id, customer_id, store_id, product_id, requested_quantity, status, note, holds_stock, requested_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?, 0, ?, ?, ?)`
+       (id, customer_id, store_id, product_id, requested_quantity, status, note, holds_stock, requested_at, requested_for, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, 0, ?, ?, ?, ?)`
     ).run(
       id,
       req.user!.id,
@@ -1110,8 +1200,16 @@ customerRouter.post(
       quantity,
       optionalString(req.body?.note, 'Note', { max: 300 }) || null,
       now,
+      requestedFor,
       now,
       now
+    );
+    notifyStoreSeller(
+      product.store_id,
+      'reservation',
+      'New reservation request',
+      `${req.user!.name.split(' ')[0]} requested ${quantity} × ${product.name}.`,
+      '/seller/reservations'
     );
 
     res.status(201).json({
@@ -1126,6 +1224,7 @@ customerRouter.post(
 customerRouter.get(
   '/reservations',
   route((req: AuthenticatedRequest, res) => {
+    expireReservations();
     const reservations = db
       .prepare(
         `SELECT r.*, p.name AS product_name, p.image AS product_image, p.price AS product_price,
@@ -1172,19 +1271,33 @@ customerRouter.post(
 /* Customer profile                                                           */
 /* -------------------------------------------------------------------------- */
 
+customerRouter.get(
+  '/profile',
+  route((req: AuthenticatedRequest, res) => {
+    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user!.id);
+    res.json({ user: { ...publicUser(user), avatarUrl: (user as any).avatar_url ?? null } });
+  })
+);
+
 customerRouter.put(
   '/profile',
   route((req: AuthenticatedRequest, res) => {
     const name = requireString(req.body?.name ?? req.user!.name, 'Full name', { min: 2, max: 80 });
     const phone = req.body?.phone ? requirePhone(req.body.phone, 'Phone') : req.user!.phone;
-    db.prepare(`UPDATE users SET name = ?, phone = ?, updated_at = ? WHERE id = ?`).run(
-      name,
-      phone || null,
-      new Date().toISOString(),
-      req.user!.id
+    const avatar =
+      req.body?.avatarUrl === undefined
+        ? undefined
+        : req.body.avatarUrl === null || req.body.avatarUrl === ''
+          ? null
+          : requireUploadUrl(req.body.avatarUrl);
+    db.prepare(
+      `UPDATE users SET name = ?, phone = ?, ${avatar === undefined ? '' : 'avatar_url = ?,'} updated_at = ? WHERE id = ?`
+    ).run(
+      ...[name, phone || null, ...(avatar === undefined ? [] : [avatar]), new Date().toISOString(), req.user!.id]
     );
-    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user!.id);
-    res.json({ user, message: 'Profile updated.' });
+    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user!.id) as any;
+    // Never return the raw row: it contains the password hash and salt.
+    res.json({ user: { ...publicUser(user), avatarUrl: user.avatar_url ?? null }, message: 'Profile updated.' });
   })
 );
 

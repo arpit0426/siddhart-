@@ -18,6 +18,14 @@ import {
   fulfilHold,
 } from '../inventory.js';
 import { randomId } from '../codes.js';
+import { expireReservations } from '../reservations.js';
+import {
+  audit,
+  maybeNotifyLowStock,
+  notify,
+  notifyCustomerOfOrder,
+  recordInventoryEvent,
+} from '../notifications.js';
 import { toRupees } from '../pricing.js';
 import { assertSellerTransition, statusLabel } from '../orderStateMachine.js';
 import { hydrateOrder } from './customer.routes.js';
@@ -443,6 +451,8 @@ sellerRouter.post(
     const now = new Date().toISOString();
     const timestamps: Record<string, string> = {
       accepted: 'accepted_at',
+      preparing: 'preparing_at',
+      packed: 'packed_at',
       ready_for_pickup: 'ready_at',
     };
 
@@ -458,6 +468,14 @@ sellerRouter.post(
           db.prepare(
             `UPDATE products SET stock = COALESCE((SELECT stock_quantity FROM inventory WHERE product_id = ?), stock) WHERE id = ?`
           ).run(item.product_id, item.product_id);
+          recordInventoryEvent({
+            productId: item.product_id,
+            storeId: store.id,
+            type: 'cancellation',
+            delta: item.quantity,
+            actorId: req.user!.id,
+            note: `Order ${order.order_number} ${target}`,
+          });
         }
         db.prepare(
           `UPDATE delivery_jobs SET status = 'cancelled', cancelled_at = ?, cancelled_reason = ?, updated_at = ?
@@ -481,6 +499,28 @@ sellerRouter.post(
         reason ? `Marked ${statusLabel(target)}: ${reason}` : `Marked ${statusLabel(target)}`,
         now
       );
+
+      notifyCustomerOfOrder(order.customer_id, order.id, order.order_number, target, reason ? `Reason: ${reason}` : undefined);
+      audit(req.user!.id, 'seller', `order.${target}`, 'order', order.id, { from: order.status });
+
+      // A delivery order that is ready makes the job visible to riders who are online.
+      if (target === 'ready_for_pickup' && order.fulfillment_type === 'delivery') {
+        const job = db.prepare(`SELECT id, earnings FROM delivery_jobs WHERE order_id = ?`).get(order.id) as any;
+        const riders = db
+          .prepare(
+            `SELECT user_id FROM rider_profiles WHERE availability = 'online' AND account_status = 'active' LIMIT 200`
+          )
+          .all() as any[];
+        for (const rider of riders) {
+          notify(
+            rider.user_id,
+            'job',
+            'New delivery available',
+            `New delivery available — ₹${job?.earnings ?? 40} estimated earnings.`,
+            `/rider/jobs/${job?.id}`
+          );
+        }
+      }
     });
 
     logger.info('seller.order_status', { orderId: order.id, from: order.status, to: target });
@@ -537,6 +577,17 @@ sellerRouter.put(
       `UPDATE stock_requests SET status = ?, seller_response = ?, responded_at = ?, updated_at = ? WHERE id = ?`
     ).run(status, response || null, now, now, request.id);
 
+    const product = db.prepare(`SELECT name FROM products WHERE id = ?`).get(request.product_id) as any;
+    notify(
+      request.customer_id,
+      'stock_request',
+      status === 'confirmed' ? 'Stock confirmed' : 'Stock unavailable',
+      status === 'confirmed'
+        ? `The seller confirmed your stock request for ${product?.name}. This does not reserve the item.`
+        : `The seller cannot fulfil ${request.requested_quantity} × ${product?.name} right now.`,
+      '/customer/stock-requests'
+    );
+
     res.json({
       message:
         status === 'confirmed'
@@ -546,31 +597,7 @@ sellerRouter.put(
   })
 );
 
-/** Lazily expires reservations whose hold has lapsed and releases their stock. */
-export function expireReservations(): number {
-  const now = new Date().toISOString();
-  const stale = db
-    .prepare(
-      `SELECT * FROM reservations WHERE status = 'confirmed' AND expires_at IS NOT NULL AND expires_at < ?`
-    )
-    .all(now) as any[];
-
-  if (stale.length === 0) return 0;
-
-  withTransaction(() => {
-    for (const reservation of stale) {
-      if (reservation.holds_stock) {
-        releaseHold(reservation.product_id, reservation.requested_quantity);
-      }
-      db.prepare(
-        `UPDATE reservations SET status = 'expired', holds_stock = 0, released_at = ?, updated_at = ? WHERE id = ?`
-      ).run(now, now, reservation.id);
-    }
-  });
-
-  logger.info('reservations.expired', { count: stale.length });
-  return stale.length;
-}
+export { expireReservations };
 
 sellerRouter.get(
   '/reservations',
@@ -648,6 +675,24 @@ sellerRouter.put(
         ).run(response || null, now, expiresAt, now, reservation.id);
       });
 
+      recordInventoryEvent({
+        productId: reservation.product_id,
+        storeId: store.id,
+        type: 'reservation',
+        delta: 0,
+        actorId: req.user!.id,
+        note: `Held ${reservation.requested_quantity} unit(s) for reservation`,
+      });
+      notify(
+        reservation.customer_id,
+        'reservation',
+        'Reservation confirmed',
+        `Your reservation was confirmed. ${reservation.requested_quantity} unit(s) are being held for you until ${new Date(
+          Date.now() + holdHours * 3600_000
+        ).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })}.`,
+        '/customer/reservations'
+      );
+      audit(req.user!.id, 'seller', 'reservation.confirm', 'reservation', reservation.id);
       const inventory = getInventory(reservation.product_id);
       res.json({
         message: `Reservation confirmed. ${reservation.requested_quantity} unit(s) are now held until ${new Date(
@@ -668,6 +713,13 @@ sellerRouter.put(
              holds_stock = 0, released_at = ?, updated_at = ? WHERE id = ?`
         ).run(response || null, now, now, now, reservation.id);
       });
+      notify(
+        reservation.customer_id,
+        'reservation',
+        'Reservation declined',
+        'The store declined your reservation request. No stock was held.',
+        '/customer/reservations'
+      );
       res.json({ message: 'Reservation rejected. Any held stock was released.' });
       return;
     }
@@ -690,6 +742,13 @@ sellerRouter.put(
       ).run(response || null, now, now, now, reservation.id);
     });
 
+    notify(
+      reservation.customer_id,
+      'reservation',
+      'Reservation fulfilled',
+      'Your reserved item was marked as collected.',
+      '/customer/reservations'
+    );
     res.json({ message: 'Reservation fulfilled and stock deducted.' });
   })
 );
