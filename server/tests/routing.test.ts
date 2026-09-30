@@ -50,45 +50,128 @@ if (!hasBuild) {
     assert.match(String(response.headers.get('content-type')), /javascript/);
   });
 
-  await suite.test('deep links return the SPA shell instead of 404', async () => {
+  await suite.test('public deep links return the SPA shell instead of 404', async () => {
     const links = [
       '/',
       '/discover',
-      '/cart',
-      '/checkout',
-      '/orders',
-      '/orders/ord_example123',
-      '/customer',
-      '/customer/orders',
-      '/customer/orders/ord_example123',
-      '/requests',
-      '/account',
+      '/discover/stores',
+      '/customer/auth',
       '/customer/login',
       '/customer/signup',
-      '/seller',
-      '/seller/orders',
-      '/seller/orders/ord_example123',
-      '/seller/products',
-      '/seller/products/prod_example',
-      '/seller/inventory',
-      '/seller/requests',
-      '/seller/store',
-      '/rider',
-      '/rider/jobs',
-      '/rider/jobs/job_example123',
-      '/rider/history',
-      '/rider/profile',
+      '/customer/recover',
+      '/seller/auth',
+      '/seller/signup',
+      '/seller/recover',
+      '/rider/auth',
+      '/rider/recover',
       '/some/unknown/deep/link',
     ];
 
     for (const link of links) {
-      const response = await fetch(`${base}${link}`);
+      const response = await fetch(`${base}${link}`, { redirect: 'manual' });
       assert.equal(response.status, 200, `${link} should serve the SPA shell`);
       assert.match(String(response.headers.get('content-type')), /text\/html/, `${link} should be HTML`);
       const body = await response.text();
       assert.ok(body.includes('id="root"'), `${link} should return index.html`);
       assert.ok(body.includes(assetPath!.replace(/^\//, '')) || body.includes(assetPath!), `${link} should load the bundle`);
     }
+  });
+
+  await suite.test('protected workspaces redirect anonymous visitors to the role auth flow', async () => {
+    const expectations: [string, string][] = [
+      ['/cart', '/customer/auth?next=%2Fcart'],
+      ['/checkout', '/customer/auth?next=%2Fcheckout'],
+      ['/orders', '/customer/auth?next=%2Forders'],
+      ['/orders/ord_example123', '/customer/auth?next=%2Forders%2Ford_example123'],
+      ['/customer', '/customer/auth?next=%2Fcustomer'],
+      ['/customer/orders', '/customer/auth?next=%2Fcustomer%2Forders'],
+      ['/requests', '/customer/auth?next=%2Frequests'],
+      ['/account', '/customer/auth?next=%2Faccount'],
+      ['/seller', '/seller/auth?next=%2Fseller'],
+      ['/seller/orders', '/seller/auth?next=%2Fseller%2Forders'],
+      ['/seller/orders/ord_example123', '/seller/auth?next=%2Fseller%2Forders%2Ford_example123'],
+      ['/seller/products', '/seller/auth?next=%2Fseller%2Fproducts'],
+      ['/seller/store', '/seller/auth?next=%2Fseller%2Fstore'],
+      ['/rider', '/rider/auth?next=%2Frider'],
+      ['/rider/jobs', '/rider/auth?next=%2Frider%2Fjobs'],
+      ['/rider/profile', '/rider/auth?next=%2Frider%2Fprofile'],
+    ];
+
+    for (const [link, location] of expectations) {
+      const response = await fetch(`${base}${link}`, { redirect: 'manual' });
+      assert.equal(response.status, 302, `${link} must redirect anonymous visitors to the auth flow`);
+      assert.equal(response.headers.get('location'), location, `${link} redirected to the wrong place`);
+    }
+  });
+
+  await suite.test('signed-in users are redirected by the server, never forced to log in again', async () => {
+    // Demo accounts are OFF in this production-mode database, so register a
+    // real seller and a real customer through the normal API.
+    const register = async (payload: Record<string, unknown>) => {
+      const response = await fetch(`${base}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-NearBuy-Client': 'web' },
+        body: JSON.stringify({ password: 'TestPass123', ...payload }),
+      });
+      assert.ok([200, 201].includes(response.status), `registration failed: ${response.status}`);
+      const cookie = (response.headers as any)
+        .getSetCookie()
+        .find((entry: string) => entry.startsWith('nb_session='));
+      assert.ok(cookie, 'registration must set the session cookie');
+      return cookie.split(';')[0];
+    };
+
+    const sessionCookie = await register({
+      role: 'seller',
+      name: 'Routing Seller',
+      email: `routing.seller.${Date.now()}@example.com`,
+      store: {
+        name: 'Routing Corner Shop',
+        category: 'Grocery',
+        address: 'Shop 1, Sector 5 Market',
+        city: 'Dwarka, New Delhi',
+        state: 'Delhi',
+        pincode: '110075',
+      },
+    });
+
+    const redirectChecks: [string, string][] = [
+      ['/', '/seller'],
+      ['/customer', '/seller'],
+      ['/customer/auth', '/seller'],
+      ['/rider/jobs', '/seller'],
+      ['/customer/recover', '/seller'],
+    ];
+    for (const [link, location] of redirectChecks) {
+      const response = await fetch(`${base}${link}`, {
+        redirect: 'manual',
+        headers: { Cookie: sessionCookie },
+      });
+      assert.equal(response.status, 302, `${link} should redirect a signed-in seller`);
+      assert.equal(response.headers.get('location'), location);
+    }
+
+    // Their own workspace is served normally.
+    const own = await fetch(`${base}/seller/orders`, {
+      redirect: 'manual',
+      headers: { Cookie: sessionCookie },
+    });
+    assert.equal(own.status, 200, 'sellers keep access to their own workspace');
+    assert.match(String(own.headers.get('content-type')), /text\/html/);
+
+    // The gateway honours customer sessions too.
+    const customerCookie = await register({
+      role: 'customer',
+      name: 'Routing Customer',
+      email: `routing.customer.${Date.now()}@example.com`,
+      termsAccepted: true,
+    });
+    const customerRoot = await fetch(`${base}/`, {
+      redirect: 'manual',
+      headers: { Cookie: customerCookie },
+    });
+    assert.equal(customerRoot.status, 302);
+    assert.equal(customerRoot.headers.get('location'), '/customer');
   });
 
   await suite.test('API 404s stay JSON and are never swallowed by the SPA fallback', async () => {

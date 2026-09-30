@@ -71,7 +71,7 @@ export const CartPage: React.FC = () => {
       <EmptyState
         title="Sign in to view your cart"
         description="Your cart is stored against your customer account so it survives refreshes and sign-ins."
-        action={<Button onClick={() => navigate('/customer/login?next=%2Fcart')}>Sign in</Button>}
+        action={<Button onClick={() => navigate('/customer/auth?next=%2Fcart')}>Sign in</Button>}
       />
     );
   }
@@ -146,7 +146,7 @@ export const CartPage: React.FC = () => {
           {stores.map((store) => (
             <Card key={store.storeId} className="p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                <Link to={`/stores/${store.storeId}`} className="text-sm font-bold text-slate-900 hover:text-emerald-700">
+                <Link to={`/stores/${store.storeId}`} className="text-sm font-bold text-slate-900 hover:text-blue-700">
                   {store.storeName}
                 </Link>
                 <Badge tone="info">Delivery {formatINR(store.deliveryFee)}</Badge>
@@ -159,7 +159,7 @@ export const CartPage: React.FC = () => {
                       <div className="min-w-0">
                         <Link
                           to={`/products/${item.product_id}`}
-                          className="block truncate text-sm font-semibold text-slate-900 hover:text-emerald-700"
+                          className="block truncate text-sm font-semibold text-slate-900 hover:text-blue-700"
                         >
                           {item.name}
                         </Link>
@@ -320,7 +320,7 @@ export const CheckoutPage: React.FC = () => {
     return (
       <EmptyState
         title="Sign in to check out"
-        action={<Button onClick={() => navigate('/customer/login?next=%2Fcheckout')}>Customer sign in</Button>}
+        action={<Button onClick={() => navigate('/customer/auth?next=%2Fcheckout')}>Customer sign in</Button>}
       />
     );
   }
@@ -361,7 +361,7 @@ export const CheckoutPage: React.FC = () => {
                 )}
                 <Link
                   to={`/orders/${order.id}`}
-                  className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:underline"
+                  className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:underline"
                 >
                   Track this order
                   <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
@@ -410,13 +410,13 @@ export const CheckoutPage: React.FC = () => {
                 <label
                   key={option.id}
                   className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm ${
-                    fulfilmentType === option.id ? 'border-emerald-500 bg-emerald-50/60' : 'border-slate-200'
+                    fulfilmentType === option.id ? 'border-blue-500 bg-blue-50/60' : 'border-slate-200'
                   }`}
                 >
                   <input
                     type="radio"
                     name="fulfilment"
-                    className="mt-0.5 h-4 w-4 text-emerald-600 focus:ring-emerald-500"
+                    className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500"
                     checked={fulfilmentType === option.id}
                     onChange={() => setFulfilmentType(option.id)}
                   />
@@ -453,13 +453,13 @@ export const CheckoutPage: React.FC = () => {
                     <label
                       key={address.id}
                       className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-xs ${
-                        addressId === address.id ? 'border-emerald-500 bg-emerald-50/60' : 'border-slate-200'
+                        addressId === address.id ? 'border-blue-500 bg-blue-50/60' : 'border-slate-200'
                       }`}
                     >
                       <input
                         type="radio"
                         name="address"
-                        className="mt-0.5 h-4 w-4 text-emerald-600 focus:ring-emerald-500"
+                        className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500"
                         checked={addressId === address.id}
                         onChange={() => setAddressId(address.id)}
                       />
@@ -489,7 +489,7 @@ export const CheckoutPage: React.FC = () => {
                 <input
                   type="radio"
                   name="payment"
-                  className="mt-0.5 h-4 w-4 text-emerald-600 focus:ring-emerald-500"
+                  className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500"
                   checked={paymentMethod === 'cod'}
                   onChange={() => setPaymentMethod('cod')}
                 />
@@ -504,7 +504,7 @@ export const CheckoutPage: React.FC = () => {
                 <input
                   type="radio"
                   name="payment"
-                  className="mt-0.5 h-4 w-4 text-emerald-600 focus:ring-emerald-500"
+                  className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500"
                   checked={paymentMethod === 'test_mode'}
                   onChange={() => setPaymentMethod('test_mode')}
                 />
@@ -728,7 +728,7 @@ const AddressModal: React.FC<{
           type="checkbox"
           checked={form.isDefault}
           onChange={(event) => setForm({ ...form, isDefault: event.target.checked })}
-          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
         />
         Use as my default delivery address
       </label>
@@ -965,7 +965,7 @@ export const OrderSummaryCard: React.FC<{ order: Order }> = ({ order }) => {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <Link to={`/orders/${order.id}`} className="text-sm font-bold text-slate-900 hover:text-emerald-700">
+            <Link to={`/orders/${order.id}`} className="text-sm font-bold text-slate-900 hover:text-blue-700">
               {order.orderNumber}
             </Link>
             <Badge tone={meta.tone}>{meta.label}</Badge>
@@ -980,7 +980,7 @@ export const OrderSummaryCard: React.FC<{ order: Order }> = ({ order }) => {
         </div>
         <div className="text-right">
           <p className="text-base font-extrabold tabular-nums text-slate-900">{formatINR(order.total)}</p>
-          <Link to={`/orders/${order.id}`} className="text-xs font-semibold text-emerald-700 hover:underline">
+          <Link to={`/orders/${order.id}`} className="text-xs font-semibold text-blue-700 hover:underline">
             View details
           </Link>
         </div>

@@ -167,7 +167,7 @@ export const SellerDashboardPage: React.FC = () => {
         <Card className="p-5">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-bold text-slate-900">Latest orders</h2>
-            <Link to="/seller/orders" className="text-xs font-semibold text-emerald-700 hover:underline">
+            <Link to="/seller/orders" className="text-xs font-semibold text-blue-700 hover:underline">
               View all
             </Link>
           </div>
@@ -180,7 +180,7 @@ export const SellerDashboardPage: React.FC = () => {
                 return (
                   <li key={order.id} className="flex items-center justify-between gap-3 py-3 text-xs">
                     <div>
-                      <Link to={`/seller/orders/${order.id}`} className="font-semibold text-slate-900 hover:text-emerald-700">
+                      <Link to={`/seller/orders/${order.id}`} className="font-semibold text-slate-900 hover:text-blue-700">
                         {order.orderNumber}
                       </Link>
                       <p className="text-slate-500">
@@ -319,7 +319,7 @@ const SellerOrderRow: React.FC<{ order: Order; onChanged: () => void }> = ({ ord
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <Link to={`/seller/orders/${order.id}`} className="text-sm font-bold text-slate-900 hover:text-emerald-700">
+            <Link to={`/seller/orders/${order.id}`} className="text-sm font-bold text-slate-900 hover:text-blue-700">
               {order.orderNumber}
             </Link>
             <Badge tone={meta.tone}>{meta.label}</Badge>
@@ -332,7 +332,7 @@ const SellerOrderRow: React.FC<{ order: Order; onChanged: () => void }> = ({ ord
         </div>
         <div className="text-right">
           <p className="text-base font-extrabold tabular-nums text-slate-900">{formatINR(order.total)}</p>
-          <Link to={`/seller/orders/${order.id}`} className="text-xs font-semibold text-emerald-700 hover:underline">
+          <Link to={`/seller/orders/${order.id}`} className="text-xs font-semibold text-blue-700 hover:underline">
             Details
           </Link>
         </div>
@@ -636,7 +636,7 @@ export const SellerProductsPage: React.FC = () => {
                 )}
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Link to={`/seller/products/${product.id}`} className="text-sm font-bold text-slate-900 hover:text-emerald-700">
+                    <Link to={`/seller/products/${product.id}`} className="text-sm font-bold text-slate-900 hover:text-blue-700">
                       {product.name}
                     </Link>
                     <Badge tone={product.is_published === 1 ? 'success' : 'neutral'}>
@@ -861,7 +861,7 @@ export const ProductEditorPage: React.FC<{ productId?: string }> = ({ productId 
               type="checkbox"
               checked={form.isPublished}
               onChange={(event) => setForm({ ...form, isPublished: event.target.checked })}
-              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
             />
             Publish this product to customers
           </label>
@@ -1504,7 +1504,7 @@ export const SellerStorePage: React.FC = () => {
                 type="checkbox"
                 checked={form.supportsDelivery}
                 onChange={(event) => setForm({ ...form, supportsDelivery: event.target.checked })}
-                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
               />
               Home delivery (₹30 flat per order)
             </label>
@@ -1513,7 +1513,7 @@ export const SellerStorePage: React.FC = () => {
                 type="checkbox"
                 checked={form.supportsPickup}
                 onChange={(event) => setForm({ ...form, supportsPickup: event.target.checked })}
-                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
               />
               Customer pickup at store
             </label>

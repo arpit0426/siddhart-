@@ -549,7 +549,7 @@ export const RiderHistoryPage: React.FC = () => {
               {jobs.map((job) => (
                 <tr key={job.jobId}>
                   <td className="px-4 py-3">
-                    <Link to={`/rider/jobs/${job.jobId}`} className="font-semibold text-slate-900 hover:text-emerald-700">
+                    <Link to={`/rider/jobs/${job.jobId}`} className="font-semibold text-slate-900 hover:text-blue-700">
                       {job.orderNumber}
                     </Link>
                     <span className="block text-[11px] text-slate-500">{job.itemCount} item(s)</span>

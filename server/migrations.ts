@@ -455,4 +455,29 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    id: '009_password_reset_tokens',
+    description: 'Single-use, expiring password-reset tokens (SHA-256 hashed at rest)',
+    up: (db) => {
+      try {
+        db.exec(`ALTER TABLE users ADD COLUMN address TEXT`);
+      } catch (err: any) {
+        if (!String(err.message).includes('duplicate column name')) throw err;
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at TEXT NOT NULL,
+          used_at TEXT,
+          created_ip TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user
+          ON password_reset_tokens(user_id, created_at DESC);
+      `);
+    },
+  },
 ];

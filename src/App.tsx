@@ -7,12 +7,17 @@ import { RequireRole } from './components/RequireRole';
 import { matchPath, navigate, useRoutePath } from './lib/router';
 import {
   DiscoverPage,
-  LandingPage,
   NotFoundPage,
   ProductDetailPage,
   StoreDetailPage,
 } from './pages/public';
-import { RoleLoginPage, RoleSignupPage } from './pages/auth';
+import {
+  AuthGatewayPage,
+  RoleAuthPage,
+  RoleAuthRedirect,
+  RoleRecoverPage,
+  RoleSignupPage,
+} from './pages/auth';
 import {
   AccountPage,
   CartPage,
@@ -48,7 +53,8 @@ const ROLES: Role[] = ['customer', 'seller', 'rider'];
 function resolveRoute(path: string): RouteMatch {
   const pathname = path.split('?')[0].replace(/\/+$/, '') || '/';
 
-  if (pathname === '/') return { key: '/', element: <LandingPage /> };
+  // First-visit authentication gateway: the first screen for every visitor.
+  if (pathname === '/') return { key: '/', element: <AuthGatewayPage /> };
   if (pathname === '/discover') return { key: 'discover', element: <DiscoverPage tab="products" /> };
   if (pathname === '/discover/stores') return { key: 'discover-stores', element: <DiscoverPage tab="stores" /> };
 
@@ -60,14 +66,24 @@ function resolveRoute(path: string): RouteMatch {
     return { key: `product-${productMatch.id}`, element: <ProductDetailPage productId={productMatch.id} /> };
   }
 
+  const authMatch = matchPath('/:role/auth', pathname);
+  if (authMatch && ROLES.includes(authMatch.role as Role)) {
+    return { key: `auth-${authMatch.role}`, element: <RoleAuthPage role={authMatch.role as Role} /> };
+  }
+
   const loginMatch = matchPath('/:role/login', pathname);
   if (loginMatch && ROLES.includes(loginMatch.role as Role)) {
-    return { key: `login-${loginMatch.role}`, element: <RoleLoginPage role={loginMatch.role as Role} /> };
+    return { key: `login-${loginMatch.role}`, element: <RoleAuthRedirect role={loginMatch.role as Role} /> };
   }
 
   const signupMatch = matchPath('/:role/signup', pathname);
   if (signupMatch && ROLES.includes(signupMatch.role as Role)) {
     return { key: `signup-${signupMatch.role}`, element: <RoleSignupPage role={signupMatch.role as Role} /> };
+  }
+
+  const recoverMatch = matchPath('/:role/recover', pathname);
+  if (recoverMatch && ROLES.includes(recoverMatch.role as Role)) {
+    return { key: `recover-${recoverMatch.role}`, element: <RoleRecoverPage role={recoverMatch.role as Role} /> };
   }
 
   /* ----------------------------- Customer ------------------------------- */
@@ -97,7 +113,14 @@ function resolveRoute(path: string): RouteMatch {
   if (pathname === '/customer/requests') navigate('/requests', { replace: true });
   if (pathname === '/customer/account') navigate('/account', { replace: true });
   if (pathname === '/customer' || pathname === '/customer/discover') {
-    return { key: 'customer-discover', element: <DiscoverPage tab="products" /> };
+    return {
+      key: 'customer-home',
+      element: (
+        <RequireRole role="customer">
+          <DiscoverPage tab="products" basePath="/customer" />
+        </RequireRole>
+      ),
+    };
   }
 
   if (pathname === '/cart') {

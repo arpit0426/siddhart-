@@ -5,6 +5,7 @@ import { config } from './config.js';
 import { logger } from './logging.js';
 import { readSessionCookie } from './security.js';
 import { ApiError } from './http.js';
+import { randomId } from './codes.js';
 
 export type Role = 'customer' | 'seller' | 'rider';
 
@@ -180,6 +181,104 @@ export function requireRole(...allowedRoles: Role[]) {
     }
     next();
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Password reset tokens (single-use, SHA-256 hashed, expiring)                */
+/* -------------------------------------------------------------------------- */
+
+function hashResetToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+export function normalizeIdentifier(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+/** True when the identifier looks like a phone number rather than an email. */
+export function looksLikePhone(value: string): boolean {
+  return !value.includes('@');
+}
+
+function normalizePhoneKey(value: string): string {
+  // Match on the last 10 digits so +91 98765 43210 and 098765 43210 both work.
+  const digits = value.replace(/\D/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+/**
+ * Find a user by email OR phone number. Used by login ("email / phone") and
+ * account recovery. Enumeration is still impossible: callers must return the
+ * same response whether or not a user is found.
+ */
+export function findUserByIdentifier(rawIdentifier: string): any | null {
+  const identifier = normalizeIdentifier(rawIdentifier);
+  if (!identifier) return null;
+
+  if (looksLikePhone(identifier)) {
+    const key = normalizePhoneKey(identifier);
+    if (!key) return null;
+    const byPhone = db.prepare(`SELECT * FROM users WHERE phone IS NOT NULL`).all() as any[];
+    return byPhone.find((user) => normalizePhoneKey(user.phone) === key) ?? null;
+  }
+
+  return (db.prepare(`SELECT * FROM users WHERE email = ?`).get(identifier) as any) ?? null;
+}
+
+export interface IssuedResetToken {
+  token: string;
+  expiresAt: Date;
+}
+
+/**
+ * Issue a password-reset token for a user. Any previous unused tokens are
+ * invalidated first, only the SHA-256 hash is stored, and the token expires
+ * after `RESET_TOKEN_TTL_MINUTES` (default 30).
+ */
+export function issueResetToken(userId: string, ip?: string): IssuedResetToken {
+  const now = new Date();
+  db.prepare(`DELETE FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL`).run(userId);
+
+  const token = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = new Date(now.getTime() + config.resetTokenTtlMinutes * 60 * 1000);
+  db.prepare(
+    `INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, created_ip, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(
+    randomId('prt'),
+    userId,
+    hashResetToken(token),
+    expiresAt.toISOString(),
+    ip ? ip.slice(0, 60) : null,
+    now.toISOString()
+  );
+  return { token, expiresAt };
+}
+
+/** Validate a reset token and return its user, or null when invalid/expired/used. */
+export function consumeResetToken(rawToken: string): any | null {
+  if (!rawToken || rawToken.length > 200) return null;
+  const row = db
+    .prepare(`SELECT * FROM password_reset_tokens WHERE token_hash = ?`)
+    .get(hashResetToken(rawToken.trim())) as any;
+  if (!row) return null;
+  if (row.used_at) return null;
+  if (new Date(row.expires_at) < new Date()) return null;
+  const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(row.user_id) as any;
+  if (!user || user.status !== 'active') return null;
+  return { tokenRow: row, user };
+}
+
+/** Mark a reset token as used (single-use guarantee). */
+export function markResetTokenUsed(tokenId: string): void {
+  db.prepare(`UPDATE password_reset_tokens SET used_at = ? WHERE id = ?`).run(
+    new Date().toISOString(),
+    tokenId
+  );
+}
+
+export function purgeExpiredResetTokens(): void {
+  db.prepare(`DELETE FROM password_reset_tokens WHERE expires_at < ?`).run(new Date().toISOString());
 }
 
 /* -------------------------------------------------------------------------- */

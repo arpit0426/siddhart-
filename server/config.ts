@@ -47,6 +47,8 @@ export const config = {
   cookieSecure: bool(process.env.COOKIE_SECURE, isProduction),
   sessionCookieName: 'nb_session',
   sessionTtlDays: num(process.env.SESSION_TTL_DAYS, 30),
+  /** Password-reset tokens: single-use, hashed at rest, short-lived. */
+  resetTokenTtlMinutes: num(process.env.RESET_TOKEN_TTL_MINUTES, 30),
   /** Business rules */
   deliveryFeePerStore: num(process.env.DELIVERY_FEE_PER_STORE, 30),
   freeDeliveryThreshold: num(process.env.FREE_DELIVERY_THRESHOLD, 0),

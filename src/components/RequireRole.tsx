@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { navigate, useRoutePath } from '../lib/router';
-import { useAuth } from '../context/AuthContext';
+import { roleHome, useAuth } from '../context/AuthContext';
 import { Button, Card, Spinner } from './ui';
 import type { Role } from '../types';
 
@@ -18,7 +18,7 @@ export const RequireRole: React.FC<{ role: Role; children: React.ReactNode }> = 
 
   useEffect(() => {
     if (loading || user) return;
-    navigate(`/${role}/login?next=${encodeURIComponent(path)}`, { replace: true });
+    navigate(`/${role}/auth?next=${encodeURIComponent(path)}`, { replace: true });
   }, [loading, user, role, path]);
 
   if (loading) return <Spinner label="Checking your session…" />;
@@ -36,7 +36,7 @@ export const RequireRole: React.FC<{ role: Role; children: React.ReactNode }> = 
             data belonging to other accounts.
           </p>
           <div className="mt-4 flex justify-center gap-2">
-            <Button onClick={() => navigate(role === 'customer' ? '/discover' : `/${user.role}`)}>
+            <Button onClick={() => navigate(roleHome(user.role))}>
               Go to my workspace
             </Button>
           </div>

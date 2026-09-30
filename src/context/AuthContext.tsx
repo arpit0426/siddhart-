@@ -20,6 +20,21 @@ interface AuthContextValue {
     email: string;
     phone?: string;
     password: string;
+    termsAccepted?: boolean;
+    address?: string;
+    vehicleType?: string;
+    vehicleNumber?: string;
+    store?: {
+      name: string;
+      category: string;
+      address: string;
+      city: string;
+      state: string;
+      pincode: string;
+      opensAt: string;
+      closesAt: string;
+      operatingDays: string;
+    };
   }) => Promise<User>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -64,7 +79,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
-    const onExpired = () => setUser(null);
+    const onExpired = () => {
+      setUser(null);
+      // The role auth screens surface "Your session has expired. Please sign in again."
+      try {
+        window.sessionStorage.setItem('nearbuy:session-expired', 'expired');
+      } catch {
+        /* storage unavailable */
+      }
+    };
     window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
   }, []);
@@ -83,7 +106,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   const register = useCallback(
-    async (input: { role: Role; name: string; email: string; phone?: string; password: string }) => {
+    async (input: {
+      role: Role;
+      name: string;
+      email: string;
+      phone?: string;
+      password: string;
+      termsAccepted?: boolean;
+      address?: string;
+      vehicleType?: string;
+      vehicleNumber?: string;
+      store?: {
+        name: string;
+        category: string;
+        address: string;
+        city: string;
+        state: string;
+        pincode: string;
+        opensAt: string;
+        closesAt: string;
+        operatingDays: string;
+      };
+    }) => {
       const data = await api.post<{ user: User }>('/api/auth/register', input);
       setUser(data.user);
       return data.user;
@@ -122,6 +166,6 @@ export function roleHome(role: Role): string {
     case 'rider':
       return '/rider';
     default:
-      return '/discover';
+      return '/customer';
   }
 }

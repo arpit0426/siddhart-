@@ -10,7 +10,7 @@ Every catalogue entry, cart, order, stock level, handoff code and status transit
 
 ```
 ┌───────────────────────────────┐
-│  React 19 + Tailwind v4 SPA   │  deep links (/orders/:id, /seller/orders/:id, /rider/jobs/:id)
+│  React 19 + Tailwind v4 SPA   │  auth gateway at /, deep links (/orders/:id, /rider/jobs/:id)
 │  src/ (router, contexts, UI)  │  relative URLs only — never localhost/absolute hosts
 └───────────────┬───────────────┘
                 │ HTTP JSON + HttpOnly session cookie + X-NearBuy-Client header
@@ -49,9 +49,62 @@ Every catalogue entry, cart, order, stock level, handoff code and status transit
 
 ---
 
-## 2. Demo / staging accounts
+## 2. First-visit authentication (the gateway)
 
-Seeded idempotently by `npm run db:seed` with the normal scrypt password pipeline (identical to self-registration):
+The **first screen is the authentication gateway** — an unauthenticated visitor who opens `/` never
+sees a public shopping homepage first. The gateway shows the NearBuy logo, the tagline
+*“What You Need, Already Nearby.”*, and three role cards:
+
+| Role | Tagline | Description | Actions |
+| :--- | :--- | :--- | :--- |
+| **Customer** | Shop Nearby | Shop from nearby stores | Login · Sign Up · Recover Account |
+| **Seller** | Sell Nearby | Manage your local store | Login · Sign Up · Recover Account |
+| **Rider** | Deliver Nearby | Deliver orders nearby | Login · Sign Up · Recover Account |
+
+Each role has its own authentication experience, and a visitor can never land in another role's
+workspace by editing the URL — the server decides.
+
+### Routes
+
+| Route | Purpose |
+| :--- | :--- |
+| `/` | Authentication gateway (302 to the session's workspace when already signed in) |
+| `/customer/auth`, `/seller/auth`, `/rider/auth` | Role login (customers may use **email or phone**) |
+| `/customer/signup`, `/seller/signup`, `/rider/signup` | Role registration |
+| `/customer/recover`, `/seller/recover`, `/rider/recover` | Password recovery + reset |
+| `/customer/*`, `/seller/*`, `/rider/*`, `/cart`, `/checkout`, `/orders`, … | Protected workspaces |
+| `/:role/login` | Legacy alias → redirects into `/:role/auth` |
+
+### Routing rules (enforced twice)
+
+1. **Server-side** (`pageRoutingGuard`): protected page URLs 302 anonymous visitors to the matching
+   `/{role}/auth?next=…`; a signed-in user visiting `/`, any auth page, or another role's workspace
+   is 302'd to their own workspace. Authenticated users are never forced to log in again.
+2. **Client-side** (`RequireRole`): covers in-app navigation, and shows
+   *“Your session has expired. Please sign in again.”* after a 401.
+3. **API-level** (`requireAuth` + `requireRole` + ownership checks): every data request is authorised
+   from the session's server-side role — `role=` values from the browser are never trusted.
+
+### Account recovery
+
+`POST /api/auth/recover` issues a **single-use, SHA-256-hashed reset token** that expires after
+`RESET_TOKEN_TTL_MINUTES` (default 30). The response is byte-identical whether or not the
+identifier matched an account, so registration status cannot be enumerated. In **demo/staging
+mode only**, the response also carries `demoResetPath` so the reset page can be opened without an
+email provider — production deployments email that URL instead and the field never appears.
+`POST /api/auth/reset` verifies the token, rehashes the new password (scrypt), marks the token used
+and **revokes every existing session** for the account.
+
+---
+
+## 3. Development / staging demo accounts
+
+> **These are development/staging demo accounts — never secure production credentials.**
+> They exist so the whole platform can be demonstrated with one click. Do not use the
+> `nearbuy.app` demo emails for real users and never enable demo mode in production.
+
+Seeded idempotently by `npm run db:seed` with the normal scrypt password pipeline (identical to
+self-registration):
 
 | Role | Name | Email | Password | Phone |
 | :--- | :--- | :--- | :--- | :--- |
@@ -59,11 +112,23 @@ Seeded idempotently by `npm run db:seed` with the normal scrypt password pipelin
 | **Seller** | Rahul Verma | `seller.demo@nearbuy.app` | `NearBuy@2026` | `+91 98112 34567` |
 | **Rider** | Arjun Kumar | `rider.demo@nearbuy.app` | `NearBuy@2026` | `+91 98111 22334` |
 
-> **Demo/staging only — never production.** Demo mode defaults to ON outside production and to **OFF in production** unless `ENABLE_DEMO_ACCOUNTS=true` is set explicitly. When disabled, the accounts are not seeded and `GET /api/auth/config` returns an empty `demoAccounts` list, so the UI never displays credentials. Credentials are fetched from that endpoint at runtime (gated by `demoMode`) — they are **not hard-coded in the frontend**.
+* **How to seed them:** `npm run db:seed` (or start the server with demo mode on — `server.ts`
+  seeds automatically outside production). Re-running is safe: users, stores and products are
+  upserted in place, never duplicated, and existing stock is never zeroed.
+* **How to reset them:** delete the database file (`rm data/nearbuy.db*`) and run `npm run db:seed`
+  again — or change a demo password through the recovery flow and reset it back by re-seeding the
+  specific user, or simply `npm run db:seed` to refresh all demo profile data.
+* **How to disable demo authentication in production:** do nothing — demo mode is **OFF in
+  production by default** unless `ENABLE_DEMO_ACCOUNTS=true` is set explicitly. When disabled, the
+  accounts are not seeded, `GET /api/auth/config` returns an empty `demoAccounts` list, the UI never
+  shows the *Use Demo Account* card, and recovery responses never include `demoResetPath`.
+* **Demo login UX:** each role login screen shows the demo identity (name + email, never the
+  password) with a **Use Demo Account** button that signs in through the real backend
+  authentication — there is no client-side bypass.
 
 ### Seeded data
 
-* **Dwarka Fresh Mart** (seller: Rahul Verma) — `Shop 14-16, Vardhman City Mall, Sector 12, Dwarka, New Delhi 110078`, open 07:00–22:00, delivery + pickup, coordinates 28.5921 / 77.0460:
+* **Dwarka Fresh Mart** (seller: Rahul Verma) — `Shop 14-16, Vardhman City Mall, Sector 12, Dwarka, New Delhi 110078`, open 07:00–22:00, published + open, coordinates 28.5921 / 77.0460:
 
 | Product | Price | Stock |
 | :--- | ---: | ---: |
@@ -73,28 +138,33 @@ Seeded idempotently by `npm run db:seed` with the normal scrypt password pipelin
 | Fortune Sunflower Oil 1L | ₹145 | 12 |
 | Britannia Bread 400g | ₹45 | 18 |
 
-* **Demo customer**: profile, one saved address (Flat 402, Shivani Apartments, Sector 10, Dwarka) and an empty cart.
-* **Demo rider**: pre-onboarded (Bike, DL 3C AB 1234) and able to run the full claiming flow.
-* Additional discovery stores (Daily Needs Corner, Sharma General Store, City Pharmacy, Raj Fruits & Vegetables) keep search and multi-store checkout realistic.
-
-Re-running `npm run db:seed` updates rows in place, never duplicates users/stores/products and never zeroes existing stock.
+* **Demo customer**: profile, one saved address (Flat 402, Shivani Apartments, Sector 10, Dwarka)
+  and an **empty cart**.
+* **Demo rider**: pre-onboarded (Bike, DL 3C AB 1234), active and immediately eligible for jobs.
+* Additional discovery stores (Daily Needs Corner, Sharma General Store, City Pharmacy,
+  Raj Fruits & Vegetables) keep search and multi-store checkout realistic.
 
 ---
 
-## 3. Walkthrough (Customer → Seller → Rider → Customer)
+## 4. Walkthrough (Customer → Seller → Rider → Customer)
 
 ```
-[Customer: customer.demo@nearbuy.app]
- 1. Search "Amul" in /discover → add 1–2 units from Dwarka Fresh Mart
+[Anyone]
+ 0. Open /  → the Authentication Gateway: pick Customer / Seller / Rider
+    (Login, Sign Up or Recover Account per role; each login screen also offers
+     a one-click "Use Demo Account" that authenticates through the real API)
+
+[Customer: customer.demo@nearbuy.app — gateway → Customer → Login]
+ 1. Search "Amul" in /customer → add 1–2 units from Dwarka Fresh Mart
  2. /cart → review the persisted cart (grouped per store, ₹30 delivery per store)
  3. /checkout → choose the saved Sector 10 address, payment = Cash on Delivery
  4. Order placed → your order page shows the DL-XXXX delivery code (customer-only)
 
-[Seller: seller.demo@nearbuy.app]
+[Seller: seller.demo@nearbuy.app — gateway → Seller → Login]
  5. /seller/orders → Accept → Preparing → Packed → Ready for pickup
  6. The pickup code PK-XXXX appears only at "ready for pickup"
 
-[Rider: rider.demo@nearbuy.app]
+[Rider: rider.demo@nearbuy.app — gateway → Rider → Login]
  7. /rider/jobs → Claim (atomic: exactly one rider wins)
  8. Enter the store's PK-XXXX → order becomes Out for delivery
  9. At the door enter the customer's DL-XXXX → Delivered, ₹40 earnings credited
@@ -107,7 +177,7 @@ Re-running `npm run db:seed` updates rows in place, never duplicates users/store
 
 ---
 
-## 4. Commands
+## 5. Commands
 
 ```bash
 npm install                 # install dependencies
@@ -129,7 +199,7 @@ npm run test:routing        # production deep links / assets / JSON 404s (run bu
 
 ---
 
-## 5. Environment configuration
+## 6. Environment configuration
 
 Copy `.env.example` → `.env` and adjust. Nothing here needs to be shared as a chat secret; set values in your hosting provider's environment/secrets panel.
 
@@ -145,6 +215,7 @@ Copy `.env.example` → `.env` and adjust. Nothing here needs to be shared as a 
 | `COOKIE_SECURE` | `true` in production | Marks the session cookie `Secure` (keep true behind HTTPS) |
 | `TRUST_PROXY` | `true` | Honour `X-Forwarded-*` from a reverse proxy |
 | `SESSION_TTL_DAYS` | `30` | Session lifetime |
+| `RESET_TOKEN_TTL_MINUTES` | `30` | Password-reset token lifetime (single-use, hashed at rest) |
 | `DELIVERY_FEE_PER_STORE` | `30` | ₹ delivery fee applied per store order |
 | `FREE_DELIVERY_THRESHOLD` | `0` | Subtotal at/above which delivery is free (0 = disabled) |
 | `RESERVATION_HOLD_HOURS` | `24` | How long a confirmed reservation holds stock |
@@ -155,7 +226,7 @@ Copy `.env.example` → `.env` and adjust. Nothing here needs to be shared as a 
 
 ---
 
-## 6. Health & diagnostics
+## 7. Health & diagnostics
 
 ```http
 GET /health        → { "status": "ok", "app": "NearBuy", "version": "2.0.0", "uptimeSeconds": … }
@@ -168,7 +239,7 @@ GET /health/ready  → { "status": "ready", "database": "connected",
 
 ---
 
-## 7. Deploying
+## 8. Deploying
 
 The app is a single Node process that serves both the API and the built SPA, so any Node host with a persistent disk works. The repository ships a `Dockerfile`, a `.dockerignore` and a Render blueprint (`render.yaml`).
 
