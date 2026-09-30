@@ -1,176 +1,127 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import type { User, Role } from '../types/index.ts';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { api, ApiRequestError, SESSION_EXPIRED_EVENT } from '../lib/api';
+import type { AppConfig, Role, User } from '../types';
 
-interface AuthContextType {
+/**
+ * Authentication state.
+ *
+ * The session lives in an HttpOnly cookie set by the API - no tokens are kept in
+ * localStorage and no role is trusted from the client: every protected request is
+ * authorised by the server against the session's role.
+ */
+interface AuthContextValue {
   user: User | null;
-  token: string | null;
+  config: AppConfig | null;
   loading: boolean;
-  activeRoleView: Role;
-  setActiveRoleView: (role: Role) => void;
-  login: (email: string, password: string, expectedRole?: Role) => Promise<{ success: boolean; error?: string }>;
-  register: (role: Role, name: string, email: string, phone: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  demoLogin: (role: Role) => Promise<{ success: boolean; error?: string }>;
+  login: (input: { email: string; password: string; role?: Role }) => Promise<User>;
+  register: (input: {
+    role: Role;
+    name: string;
+    email: string;
+    phone?: string;
+    password: string;
+  }) => Promise<User>;
   logout: () => Promise<void>;
-  refreshUser: () => Promise<void>;
-  getAuthHeaders: () => Record<string, string>;
+  refresh: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(localStorage.getItem('nearbuy_token'));
-  const [loading, setLoading] = useState<boolean>(true);
-  const [activeRoleView, setActiveRoleView] = useState<Role>('customer');
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const getAuthHeaders = (): Record<string, string> => {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json'
-    };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-    return headers;
-  };
-
-  const refreshUser = async () => {
-    if (!token) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
+  const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/auth/me', {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const data = await api.get<{ authenticated: boolean; user: User | null }>('/api/auth/session', {
+        silent: true,
       });
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data.user);
-        if (data.user?.role) {
-          setActiveRoleView(data.user.role);
-        }
-      } else {
-        // Token expired or invalid
-        localStorage.removeItem('nearbuy_token');
-        setToken(null);
-        setUser(null);
-      }
+      setUser(data.authenticated ? data.user : null);
     } catch {
-      // Network or offline fallback
-    } finally {
-      setLoading(false);
+      // Network hiccup: keep whatever state we have rather than logging the user out.
     }
-  };
+  }, []);
 
   useEffect(() => {
-    refreshUser();
-  }, [token]);
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const [sessionResult, configResult] = await Promise.allSettled([
+        api.get<{ authenticated: boolean; user: User | null }>('/api/auth/session', { silent: true }),
+        api.get<AppConfig>('/api/auth/config'),
+      ]);
+      if (cancelled) return;
+      if (sessionResult.status === 'fulfilled') {
+        setUser(sessionResult.value.authenticated ? sessionResult.value.user : null);
+      }
+      if (configResult.status === 'fulfilled') setConfig(configResult.value);
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const login = async (email: string, password: string, expectedRole?: Role) => {
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, expectedRole })
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
+
+  const login = useCallback(
+    async ({ email, password, role }: { email: string; password: string; role?: Role }) => {
+      const data = await api.post<{ user: User }>('/api/auth/login', {
+        email,
+        password,
+        expectedRole: role,
       });
-      const data = await res.json();
-      if (!res.ok) {
-        return { success: false, error: data.error || 'Login failed' };
-      }
-      localStorage.setItem('nearbuy_token', data.token);
-      setToken(data.token);
       setUser(data.user);
-      setActiveRoleView(data.user.role);
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Network error' };
-    }
-  };
+      return data.user;
+    },
+    []
+  );
 
-  const register = async (role: Role, name: string, email: string, phone: string, password: string) => {
-    try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role, name, email, phone, password })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        return { success: false, error: data.error || 'Registration failed' };
-      }
-      localStorage.setItem('nearbuy_token', data.token);
-      setToken(data.token);
+  const register = useCallback(
+    async (input: { role: Role; name: string; email: string; phone?: string; password: string }) => {
+      const data = await api.post<{ user: User }>('/api/auth/register', input);
       setUser(data.user);
-      setActiveRoleView(data.user.role);
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Network error' };
-    }
-  };
+      return data.user;
+    },
+    []
+  );
 
-  const demoLogin = async (role: Role) => {
+  const logout = useCallback(async () => {
     try {
-      const res = await fetch('/api/auth/demo-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        return { success: false, error: data.error || 'Demo login failed' };
-      }
-      localStorage.setItem('nearbuy_token', data.token);
-      setToken(data.token);
-      setUser(data.user);
-      setActiveRoleView(data.user.role);
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Network error' };
-    }
-  };
-
-  const logout = async () => {
-    try {
-      if (token) {
-        await fetch('/api/auth/logout', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-      }
-    } catch {
-      // Ignore
+      await api.post('/api/auth/logout');
+    } catch (error) {
+      if (!(error instanceof ApiRequestError)) throw error;
     } finally {
-      localStorage.removeItem('nearbuy_token');
-      setToken(null);
       setUser(null);
     }
-  };
+  }, []);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        token,
-        loading,
-        activeRoleView,
-        setActiveRoleView,
-        login,
-        register,
-        demoLogin,
-        logout,
-        refreshUser,
-        getAuthHeaders
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo(
+    () => ({ user, config, loading, login, register, logout, refresh }),
+    [user, config, loading, login, register, logout, refresh]
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
-export const useAuth = () => {
+export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
+  if (!context) throw new Error('useAuth must be used inside AuthProvider');
   return context;
-};
+}
+
+export function roleHome(role: Role): string {
+  switch (role) {
+    case 'seller':
+      return '/seller';
+    case 'rider':
+      return '/rider';
+    default:
+      return '/discover';
+  }
+}
