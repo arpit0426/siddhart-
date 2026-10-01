@@ -212,7 +212,27 @@ const PasswordField: React.FC<{
 /* -------------------------------------------------------------------------- */
 
 export const AuthGatewayPage: React.FC = () => {
-  const { user, loading, config } = useAuth();
+  const { user, loading, config, login } = useAuth();
+  const toast = useToast();
+  const [demoBusy, setDemoBusy] = useState<Role | null>(null);
+  const [demoError, setDemoError] = useState<string | null>(null);
+
+  // One-click demo entry: real backend login, then straight into the workspace.
+  const enterDemo = async (role: Role) => {
+    const account = config?.demoAccounts.find((entry) => entry.role === role);
+    if (!account) return;
+    setDemoError(null);
+    setDemoBusy(role);
+    try {
+      const signedIn = await login({ email: account.email, password: account.password, role });
+      toast.push({ title: `Welcome, ${signedIn.name.split(' ')[0]}`, tone: 'success' });
+      navigate(roleHome(signedIn.role), { replace: true });
+    } catch (caught) {
+      setDemoError(errorMessage(caught));
+    } finally {
+      setDemoBusy(null);
+    }
+  };
 
   // Already signed in? Never force another login — go straight to the workspace.
   useEffect(() => {
@@ -356,6 +376,19 @@ export const AuthGatewayPage: React.FC = () => {
                       <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                     </Link>
                   </div>
+                  {config?.demoMode && config.demoAccounts.some((entry) => entry.role === role) && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="mt-2 w-full"
+                      disabled={demoBusy !== null}
+                      onClick={() => enterDemo(role)}
+                    >
+                      <BadgeCheck className="h-3.5 w-3.5 text-blue-600" aria-hidden="true" />
+                      {demoBusy === role ? 'Signing in…' : `Enter as demo ${meta.name.toLowerCase()}`}
+                    </Button>
+                  )}
                   <div className="mt-2.5 text-center">
                     <Link
                       to={`/${role}/recover`}
@@ -370,12 +403,19 @@ export const AuthGatewayPage: React.FC = () => {
             })}
           </div>
 
+          {demoError && (
+            <div className="mt-4">
+              <ErrorNote>{demoError}</ErrorNote>
+            </div>
+          )}
+
           {config?.demoMode && (
             <p className="mt-5 inline-flex items-start gap-2 self-start rounded-xl border border-blue-200 bg-blue-50/80 px-3 py-2 text-[11px] text-blue-900">
               <BadgeCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span>
-                <strong className="font-semibold">Ready to use:</strong> each login screen has a
-                working demo account, seeded into the real database. One click signs you in.
+                <strong className="font-semibold">Ready to use:</strong> every role card has an
+                <em> Enter as demo</em> button — a working account seeded into the real database.
+                One click signs you in.
               </span>
             </p>
           )}
