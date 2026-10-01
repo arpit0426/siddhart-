@@ -14,6 +14,8 @@ export function publicStore(store: any) {
     temporarily_unavailable: store.temporarily_unavailable, is_published: store.is_published,
     logo: store.logo, image: store.image, supports_delivery: store.supports_delivery,
     supports_pickup: store.supports_pickup, published_at: store.published_at,
+    supports_reservations: store.supports_reservations, closure_type: store.closure_type, status_message: store.status_message,
+    fulfilment_min_minutes: store.fulfilment_min_minutes, fulfilment_max_minutes: store.fulfilment_max_minutes,
     product_count: store.product_count,
   };
 }

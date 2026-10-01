@@ -151,3 +151,12 @@ export function requireNonEmptyArray(value: unknown, field: string): any[] {
   }
   return value;
 }
+
+/** Only URLs produced by our own upload endpoint (or bundled /images assets) are accepted. */
+export function requireUploadUrl(value: unknown, field = 'Image'): string {
+  const url = requireString(value, field, { min: 5, max: 200 });
+  if (!/^\/(uploads|images)\/[A-Za-z0-9._-]+$/.test(url)) {
+    throw new ApiError(400, `${field} must be uploaded through NearBuy.`, 'invalid_image');
+  }
+  return url;
+}

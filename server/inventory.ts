@@ -44,10 +44,11 @@ export function inventoryMap(productIds: string[]): Map<string, InventorySnapsho
 function record(before: InventorySnapshot, reason: string, context: InventoryContext = {}) {
   const after = getInventory(before.productId)!;
   db.prepare(`INSERT INTO inventory_events (id, product_id, store_id, actor_id, reason, stock_before, stock_after,
-    reserved_before, reserved_after, reference_id, created_at)
-    SELECT ?, id, store_id, ?, ?, ?, ?, ?, ?, ?, ? FROM products WHERE id = ?`)
+    reserved_before, reserved_after, reference_id, type, delta, resulting_stock, note, created_at)
+    SELECT ?, id, store_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM products WHERE id = ?`)
     .run(randomId('ie'), context.actorId ?? null, context.reason ?? reason, before.stockQuantity, after.stockQuantity,
-      before.reservedQuantity, after.reservedQuantity, context.referenceId ?? null, new Date().toISOString(), before.productId);
+      before.reservedQuantity, after.reservedQuantity, context.referenceId ?? null, reason,
+      after.stockQuantity - before.stockQuantity, after.stockQuantity, context.reason ?? null, new Date().toISOString(), before.productId);
 }
 const validQuantity = (quantity: number) => Number.isInteger(quantity) && quantity > 0;
 

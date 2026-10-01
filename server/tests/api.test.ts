@@ -15,6 +15,9 @@ const db = server.db();
 const demoCustomer = server.client();
 const demoSeller = server.client();
 const demoRider = server.client();
+// Discovery lives behind the customer session (no anonymous catalogue access).
+const browser = server.client();
+await loginOk(browser, 'customer.demo@nearbuy.app', 'NearBuy@2026', 'customer');
 
 async function loginOk(client: ApiClient, email: string, password: string, role: string) {
   const response = await client.post('/api/auth/login', { email, password, expectedRole: role });
@@ -80,8 +83,8 @@ await suite.test('health endpoints report process and database readiness', async
   assert.ok(ready.body.migrationsApplied >= 8);
 });
 
-await suite.test('public discovery returns the seeded demo store and catalog', async () => {
-  const anonymous = server.client();
+await suite.test('discovery returns the seeded demo store and catalog', async () => {
+  const anonymous = browser;
   const stores = await anonymous.get('/api/customer/stores');
   assert.equal(stores.status, 200);
   const names = (stores.body.stores ?? []).map((store: any) => store.name);
@@ -209,7 +212,7 @@ await suite.test('CSRF guards block cookie writes without the client header or f
 
 await suite.test('cart totals are computed server-side and client prices are ignored', async () => {
   const { client } = await registerCustomer('cart');
-  const anonymous = server.client();
+  const anonymous = browser;
   const products = await anonymous.get('/api/customer/products?query=Amul');
   const product = products.body.products[0];
 
@@ -236,7 +239,7 @@ await suite.test('cart totals are computed server-side and client prices are ign
 await suite.test('checkout quote is server-authoritative (₹30 per store, no client totals)', async () => {
   const { client } = await registerCustomer('quote');
   const addressId = await addAddress(client);
-  const products = await server.client().get('/api/customer/products?query=Bread');
+  const products = await browser.get('/api/customer/products?query=Bread');
   const bread = products.body.products.find((product: any) => /Bread/i.test(product.name));
 
   const quote = await client.post('/api/customer/checkout/quote', {
@@ -291,23 +294,23 @@ await suite.test('a new seller only becomes discoverable after publishing, with 
   assert.equal(product.status, 201, JSON.stringify(product.body));
   createdStoreProductId = product.body.product.id;
 
-  const draft = await server.client().get('/api/customer/products?query=Sunrise%20Poha');
+  const draft = await browser.get('/api/customer/products?query=Sunrise%20Poha');
   assert.equal(productIds(draft.body).includes(createdStoreProductId), false, 'draft store is not discoverable');
   assert.equal((await seller.post('/api/seller/store/publish')).status, 200);
-  const beforePublish = await server.client().get('/api/customer/products?query=Sunrise%20Poha');
+  const beforePublish = await browser.get('/api/customer/products?query=Sunrise%20Poha');
   assert.equal(productIds(beforePublish.body).includes(createdStoreProductId), true, 'published store is discoverable');
-  assert.equal((await server.client().get(`/api/customer/products/${createdStoreProductId}`)).status, 200);
+  assert.equal((await browser.get(`/api/customer/products/${createdStoreProductId}`)).status, 200);
 
   // Unpublish → hidden from discovery, direct lookup must fail too.
   const unpublish = await seller.post('/api/seller/store/unpublish');
   assert.equal(unpublish.status, 200);
-  const hidden = await server.client().get('/api/customer/products?query=Sunrise%20Poha');
+  const hidden = await browser.get('/api/customer/products?query=Sunrise%20Poha');
   assert.equal(productIds(hidden.body).includes(createdStoreProductId), false);
-  assert.equal((await server.client().get(`/api/customer/products/${createdStoreProductId}`)).status, 404);
+  assert.equal((await browser.get(`/api/customer/products/${createdStoreProductId}`)).status, 404);
 
   const publish = await seller.post('/api/seller/store/publish');
   assert.equal(publish.status, 200);
-  const visible = await server.client().get('/api/customer/products?query=Sunrise%20Poha');
+  const visible = await browser.get('/api/customer/products?query=Sunrise%20Poha');
   assert.equal(productIds(visible.body).includes(createdStoreProductId), true);
 
   // Stock authority: seller sets 1, customers cannot buy 2.
@@ -417,9 +420,9 @@ await suite.test('full handoff lifecycle with role-scoped codes and status sync'
   assert.equal(checkout.status, 201, JSON.stringify(checkout.body));
   const order = checkout.body.orders[0];
   mainOrderId = order.id;
-  mainDeliveryCode = order.deliveryCode;
   assert.equal(order.status, 'placed');
-  assert.match(mainDeliveryCode, /^DL-\d{4}$/);
+  assert.equal(order.deliveryCode ?? null, null, 'delivery code stays locked until the handoff stage');
+  assert.equal(order.deliveryCodeState, 'locked');
   assert.equal('pickupCode' in order, false, 'customer must never receive the seller pickup code');
   assert.equal(order.total, 166, '2 × ₹68 + ₹30 delivery');
 
@@ -459,7 +462,14 @@ await suite.test('full handoff lifecycle with role-scoped codes and status sync'
   assert.equal('pickupCode' in customerAfterReady.body.order, false);
 
   // Job becomes claimable; claiming is atomic.
-  const available = await demoRider.get('/api/rider/jobs/available');
+  // Riders must be online to see or claim work.
+  const offlineJobs = await demoRider.get('/api/rider/jobs');
+  assert.equal(offlineJobs.body.offline, true);
+  assert.equal(offlineJobs.body.jobs.length, 0);
+  assert.equal((await demoRider.post(`/api/rider/jobs/any/claim`)).status, 409, 'offline riders cannot claim');
+  assert.equal((await demoRider.put('/api/rider/availability', { availability: 'online' })).status, 200);
+
+  const available = await demoRider.get('/api/rider/jobs');
   const job = available.body.jobs.find((row: any) => row.orderId === mainOrderId);
   assert.ok(job, 'ready order must appear in available jobs');
   mainJobId = job.jobId;
@@ -487,6 +497,7 @@ await suite.test('full handoff lifecycle with role-scoped codes and status sync'
     vehicleType: 'Bike',
     vehicleNumber: 'DL 3C CD 5678',
   });
+  assert.equal((await secondRiderClient.put('/api/rider/availability', { availability: 'online' })).status, 200);
   const claimedAgain = await secondRiderClient.post(`/api/rider/jobs/${mainJobId}/claim`);
   assert.equal(claimedAgain.status, 409);
   assert.equal(claimedAgain.body.code, 'already_claimed');
@@ -502,8 +513,21 @@ await suite.test('full handoff lifecycle with role-scoped codes and status sync'
   assert.equal(pickup.status, 200, JSON.stringify(pickup.body));
 
   const afterPickup = await demoCustomer.get(`/api/customer/orders/${mainOrderId}`);
-  assert.equal(afterPickup.body.order.status, 'out_for_delivery');
-  assert.equal(afterPickup.body.order.rider.name, 'Arjun Kumar');
+  assert.equal(afterPickup.body.order.status, 'picked_up');
+  assert.equal(afterPickup.body.order.deliveryCode, null, 'code is still locked before the rider is out for delivery');
+
+  const earlyDelivery = await demoRider.post(`/api/rider/jobs/${mainJobId}/verify-delivery`, { deliveryCode: 'DL-0000' });
+  assert.equal(earlyDelivery.status, 400, 'delivery cannot be verified before the rider is out for delivery');
+
+  const startDelivery = await demoRider.post(`/api/rider/jobs/${mainJobId}/start-delivery`);
+  assert.equal(startDelivery.status, 200, JSON.stringify(startDelivery.body));
+
+  const outForDelivery = await demoCustomer.get(`/api/customer/orders/${mainOrderId}`);
+  assert.equal(outForDelivery.body.order.status, 'out_for_delivery');
+  assert.equal(outForDelivery.body.order.rider.name, 'Arjun K.');
+  mainDeliveryCode = outForDelivery.body.order.deliveryCode;
+  assert.match(mainDeliveryCode, /^DL-\d{4}$/);
+  assert.equal((await demoSeller.get(`/api/seller/orders/${mainOrderId}`)).body.order.deliveryCode, undefined);
 
   const wrongDelivery = await demoRider.post(`/api/rider/jobs/${mainJobId}/verify-delivery`, {
     deliveryCode: mainPickupCode,
@@ -550,7 +574,7 @@ await suite.test('repeated wrong handoff codes are rate-limited', async () => {
 
   const secondRider = secondRiderClient;
 
-  const available = await secondRider.get('/api/rider/jobs/available');
+  const available = await secondRider.get('/api/rider/jobs');
   const job = available.body.jobs.find((row: any) => row.orderId === orderId);
   assert.ok(job, 'second rider should see the new job');
   assert.equal((await secondRider.post(`/api/rider/jobs/${job.jobId}/claim`)).status, 200);
@@ -692,8 +716,11 @@ await suite.test('seller signup creates the store in the same transaction', asyn
   assert.equal(preview.body.store.name, 'Green Basket Bazaar');
   assert.equal((await client.post('/api/seller/store/publish')).status, 200);
 
-  // Discovery lists the store only after explicit publication.
-  const discovery = await server.client().get('/api/customer/stores?query=Green%20Basket');
+  // Discovery lists the store after explicit publication.
+  // The earlier password-reset test revoked every demo session; sign in again.
+  await loginOk(browser, 'customer.demo@nearbuy.app', 'NearBuy@2026', 'customer');
+  const discovery = await browser.get('/api/customer/stores?query=Green%20Basket');
+  assert.ok(discovery.status === 200, JSON.stringify(discovery.body));
   assert.ok(discovery.body.stores.some((row: any) => row.name === 'Green Basket Bazaar'));
 });
 

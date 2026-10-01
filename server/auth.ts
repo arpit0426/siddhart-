@@ -296,7 +296,21 @@ export function purgeExpiredResetTokens(): void {
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
 
+/** Seeded demo identities. Their password is public, so lockout only blocks the demo. */
+const DEMO_ACCOUNT_EMAILS = new Set([
+  'customer.demo@nearbuy.app',
+  'seller.demo@nearbuy.app',
+  'rider.demo@nearbuy.app',
+]);
+
+export function isPublicDemoAccount(user: { email?: string | null } | null | undefined): boolean {
+  const email = user?.email?.trim().toLowerCase();
+  return Boolean(config.demoMode && email && DEMO_ACCOUNT_EMAILS.has(email));
+}
+
 export function assertAccountNotLocked(user: any): void {
+  // A wrong guess must not lock the published demo accounts out of the demo.
+  if (isPublicDemoAccount(user)) return;
   if (user?.locked_until && new Date(user.locked_until) > new Date()) {
     const minutes = Math.ceil((new Date(user.locked_until).getTime() - Date.now()) / 60000);
     throw new ApiError(
@@ -347,4 +361,48 @@ export function publicUser(user: any) {
     createdAt: user.created_at,
     profileImage: user.profile_image ?? null,
   };
+}
+
+export interface SessionInfo {
+  id: string;
+  userAgent: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  current: boolean;
+}
+
+/** Sessions are identified by a short, non-reversible prefix of the stored hash. */
+export function listSessions(userId: string, currentToken: string | null): SessionInfo[] {
+  const currentHash = currentToken ? hashToken(currentToken) : null;
+  const rows = db
+    .prepare(
+      `SELECT token_hash, user_agent, created_at, last_seen_at, expires_at FROM sessions
+       WHERE user_id = ? AND expires_at > ? ORDER BY last_seen_at DESC`
+    )
+    .all(userId, new Date().toISOString()) as any[];
+  return rows.map((row) => ({
+    id: String(row.token_hash).slice(0, 16),
+    userAgent: row.user_agent,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+    expiresAt: row.expires_at,
+    current: row.token_hash === currentHash,
+  }));
+}
+
+export function revokeSessionById(userId: string, shortId: string, currentToken: string | null): boolean {
+  if (!/^[a-f0-9]{16}$/.test(shortId)) return false;
+  const currentHash = currentToken ? hashToken(currentToken) : '';
+  const result = db
+    .prepare(`DELETE FROM sessions WHERE user_id = ? AND substr(token_hash, 1, 16) = ? AND token_hash != ?`)
+    .run(userId, shortId, currentHash);
+  return result.changes > 0;
+}
+
+export function deleteOtherSessions(userId: string, currentToken: string | null): number {
+  const currentHash = currentToken ? hashToken(currentToken) : '';
+  return Number(
+    db.prepare(`DELETE FROM sessions WHERE user_id = ? AND token_hash != ?`).run(userId, currentHash).changes
+  );
 }

@@ -9,6 +9,7 @@ import { rateLimit } from './rateLimit.js';
 import { purgeExpiredSessions } from './auth.js';
 import { authRouter } from './routes/auth.routes.js';
 import { customerRouter } from './routes/customer.routes.js';
+import { customerPortalRouter } from './routes/customer.portal.routes.js';
 import { sellerRouter } from './routes/seller.routes.js';
 import { riderRouter } from './routes/rider.routes.js';
 
@@ -69,6 +70,7 @@ export function buildApp() {
 
   app.use('/api/auth', authRouter);
   app.use('/api/customer', customerRouter);
+  app.use('/api/customer', customerPortalRouter);
   app.use('/api/seller', sellerRouter);
   app.use('/api/rider', riderRouter);
   app.use('/api/*', apiNotFound);

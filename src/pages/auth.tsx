@@ -95,10 +95,43 @@ export const ROLE_META: Record<Role, RoleMeta> = {
   },
 };
 
-/** Only same-app relative paths are honoured as post-login redirect targets. */
+/**
+ * Post-login redirect targets are resolved so a successful sign-up/login ALWAYS
+ * lands inside the signed-in user's own workspace — never on another role's
+ * gate screen, another login page, or a dead 404.
+ */
+function normalisePath(raw: string): string {
+  return raw.split('?')[0].replace(/\/+$/, '') || '/';
+}
+
+/** The role that owns a workspace path, or null for anything unrecognised. */
+function ownerRoleForPath(raw: string): Role | null {
+  const pathname = normalisePath(raw);
+  if (/^\/seller(\/|$)/.test(pathname)) return 'seller';
+  if (/^\/rider(\/|$)/.test(pathname)) return 'rider';
+  if (/^\/customer(\/|$)/.test(pathname)) return 'customer';
+  // Legacy flat customer surface (catalogue + cart/checkout/orders/…).
+  if (/^\/(cart|checkout|orders|requests|account|discover|products|stores)(\/|$)/.test(pathname)) {
+    return 'customer';
+  }
+  return null;
+}
+
+function isAuthSurface(raw: string): boolean {
+  const pathname = normalisePath(raw);
+  return pathname === '/' || /^\/(customer|seller|rider)\/(auth|login|signup|recover)$/.test(pathname);
+}
+
+/**
+ * Only same-app relative paths inside the signed-in user's OWN workspace are
+ * honoured as post-login redirect targets. Anything else (another role's pages,
+ * auth screens, unknown paths) falls back to the role's home workspace.
+ */
 function safeNext(raw: string | null, role: Role): string {
-  if (!raw) return roleHome(role);
-  if (!raw.startsWith('/') || raw.startsWith('//')) return roleHome(role);
+  const home = roleHome(role);
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return home;
+  if (isAuthSurface(raw)) return home;
+  if (ownerRoleForPath(raw) !== role) return home;
   return raw;
 }
 
@@ -138,11 +171,11 @@ export const AuthLayout: React.FC<{ children: React.ReactNode; wide?: boolean }>
           <NearBuyWordmark size={36} tagline />
         </Link>
         <Link
-          to="/discover"
+          to="/customer/auth"
           className="hidden items-center gap-1.5 rounded-lg border border-slate-200 bg-white/80 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:border-blue-300 hover:text-blue-700 sm:inline-flex"
         >
           <ShoppingBag className="h-3.5 w-3.5" aria-hidden="true" />
-          Browse stores first
+          Shop as a customer
         </Link>
       </div>
     </header>
@@ -212,7 +245,27 @@ const PasswordField: React.FC<{
 /* -------------------------------------------------------------------------- */
 
 export const AuthGatewayPage: React.FC = () => {
-  const { user, loading, config } = useAuth();
+  const { user, loading, config, login } = useAuth();
+  const toast = useToast();
+  const [demoBusy, setDemoBusy] = useState<Role | null>(null);
+  const [demoError, setDemoError] = useState<string | null>(null);
+
+  // One-click demo entry: real backend login, then straight into the workspace.
+  const enterDemo = async (role: Role) => {
+    const account = config?.demoAccounts.find((entry) => entry.role === role);
+    if (!account) return;
+    setDemoError(null);
+    setDemoBusy(role);
+    try {
+      const signedIn = await login({ email: account.email, password: account.password, role });
+      toast.push({ title: `Welcome, ${signedIn.name.split(' ')[0]}`, tone: 'success' });
+      navigate(roleHome(signedIn.role), { replace: true });
+    } catch (caught) {
+      setDemoError(errorMessage(caught));
+    } finally {
+      setDemoBusy(null);
+    }
+  };
 
   // Already signed in? Never force another login — go straight to the workspace.
   useEffect(() => {
@@ -356,6 +409,19 @@ export const AuthGatewayPage: React.FC = () => {
                       <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                     </Link>
                   </div>
+                  {config?.demoMode && config.demoAccounts.some((entry) => entry.role === role) && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="mt-2 w-full"
+                      disabled={demoBusy !== null}
+                      onClick={() => enterDemo(role)}
+                    >
+                      <BadgeCheck className="h-3.5 w-3.5 text-blue-600" aria-hidden="true" />
+                      {demoBusy === role ? 'Signing in…' : `Enter as demo ${meta.name.toLowerCase()}`}
+                    </Button>
+                  )}
                   <div className="mt-2.5 text-center">
                     <Link
                       to={`/${role}/recover`}
@@ -370,12 +436,19 @@ export const AuthGatewayPage: React.FC = () => {
             })}
           </div>
 
+          {demoError && (
+            <div className="mt-4">
+              <ErrorNote>{demoError}</ErrorNote>
+            </div>
+          )}
+
           {config?.demoMode && (
             <p className="mt-5 inline-flex items-start gap-2 self-start rounded-xl border border-blue-200 bg-blue-50/80 px-3 py-2 text-[11px] text-blue-900">
               <BadgeCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span>
-                <strong className="font-semibold">Development/staging demo:</strong> each login screen
-                offers a one-click demo account, seeded into the real database.
+                <strong className="font-semibold">Ready to use:</strong> every role card has an
+                <em> Enter as demo</em> button — a working account seeded into the real database.
+                One click signs you in.
               </span>
             </p>
           )}
@@ -409,6 +482,12 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
   }, [meta.loginTitle]);
 
   const demoAccount = config?.demoAccounts.find((account) => account.role === role);
+
+  // Cookie sessions are redirected by the server. Bearer-only sessions (embedded
+  // preview) land here after a refresh and should continue straight in.
+  useEffect(() => {
+    if (user && user.role === role) navigate(safeNext(next, user.role), { replace: true });
+  }, [user, role, next]);
 
   const signIn = async (email: string, pass: string) => {
     setError(null);
@@ -512,7 +591,7 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
           {config?.demoMode && demoAccount && (
             <div className="mt-6 rounded-xl border border-dashed border-blue-300 bg-blue-50/60 p-4">
               <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">
-                Demo {meta.name} · development/staging only
+                Working {meta.name} account
               </p>
               <p className="mt-1 text-xs font-semibold text-slate-800">{demoAccount.name}</p>
               <p className="text-xs text-slate-600">{demoAccount.email}</p>
@@ -533,7 +612,8 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
                 Use Demo Account
               </Button>
               <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-                Signs in through the same server authentication as any other account.
+                This is a real, active account in the database. One click signs in through the same
+                server authentication as any other account.
               </p>
             </div>
           )}

@@ -119,12 +119,19 @@ sellerWorkspaceRouter.get('/earnings', route((req: AuthenticatedRequest, res) =>
     COALESCE(SUM(CASE WHEN kind='refund' THEN amount ELSE 0 END),0) AS refunds,
     COALESCE(SUM(CASE WHEN kind='adjustment' THEN amount ELSE 0 END),0) AS adjustments
     FROM seller_financial_adjustments WHERE store_id=?`).get(store.id) as any;
-  const settled = db.prepare("SELECT COALESCE(SUM(amount),0) AS paidSettlements FROM seller_settlements WHERE store_id=? AND status='paid'").get(store.id) as any;
+  // Preserve real settlements already recorded by the shared portal ledger.
+  const settlementQuery = `SELECT id,amount,status,period_start,period_end,reference,paid_at,created_at FROM seller_settlements WHERE store_id=?
+    UNION ALL SELECT id,amount,status,period_start,period_end,reference,paid_at,created_at FROM settlements
+      WHERE user_id=? AND role='seller' AND id NOT IN (SELECT id FROM seller_settlements WHERE store_id=?)`;
+  const settlementArgs = [store.id, req.user!.id, store.id];
+  const settled = db.prepare(`SELECT COALESCE(SUM(amount),0) AS paidSettlements FROM (${settlementQuery}) WHERE status='paid'`).get(...settlementArgs) as any;
+  const settlements = db.prepare(`${settlementQuery} ORDER BY created_at DESC LIMIT 100`).all(...settlementArgs);
+  const recent = db.prepare(`SELECT id,order_number,subtotal,delivered_at FROM orders WHERE store_id=? AND status='delivered' ORDER BY delivered_at DESC,id DESC LIMIT 20`).all(store.id);
   const total = (db.prepare('SELECT COUNT(*) AS n FROM orders WHERE store_id=?').get(store.id) as any).n;
   const transactions = db.prepare(`SELECT id,order_number,status,subtotal,delivery_fee,total,payment_method,created_at,delivered_at
     FROM orders WHERE store_id=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`).all(store.id, pageSize, offset);
-  res.json({ summary: { ...sales, ...adjustments, ...settled, netSales: toRupees(sales.grossSales - adjustments.fees - adjustments.refunds + adjustments.adjustments) },
-    transactions, settlements: db.prepare('SELECT id,amount,status,period_start,period_end,reference,paid_at,created_at FROM seller_settlements WHERE store_id=? ORDER BY created_at DESC LIMIT 100').all(store.id),
+  res.json({ summary: { ...sales, ...adjustments, ...settled, gross: sales.grossSales, platformFee: adjustments.fees, net: toRupees(sales.grossSales - adjustments.fees - adjustments.refunds + adjustments.adjustments), netSales: toRupees(sales.grossSales - adjustments.fees - adjustments.refunds + adjustments.adjustments) },
+    transactions, settlements, recent,
     ledger: db.prepare('SELECT id,amount,kind,note,created_at FROM seller_financial_adjustments WHERE store_id=? ORDER BY created_at DESC LIMIT 50').all(store.id),
     integration: 'not_connected', pagination: pageMeta(total, page, pageSize) });
 }));
@@ -137,6 +144,14 @@ sellerWorkspaceRouter.get('/notifications', route((req: AuthenticatedRequest, re
   const where = clauses.join(' AND '); const total = (db.prepare(`SELECT COUNT(*) AS n FROM seller_notifications WHERE ${where}`).get(...values) as any).n;
   const unread = (db.prepare('SELECT COUNT(*) AS n FROM seller_notifications WHERE seller_id=? AND read_at IS NULL').get(req.user!.id) as any).n;
   res.json({ notifications: db.prepare(`SELECT id,category,title,body,href,read_at,created_at FROM seller_notifications WHERE ${where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`).all(...values, pageSize, offset), unread, pagination: pageMeta(total, page, pageSize) });
+}));
+sellerWorkspaceRouter.get('/notifications/unread-count', route((req: AuthenticatedRequest, res) => {
+  const row = db.prepare('SELECT COUNT(*) AS unreadCount FROM seller_notifications WHERE seller_id=? AND read_at IS NULL').get(req.user!.id);
+  res.json(row);
+}));
+sellerWorkspaceRouter.post('/notifications/:id/read', route((req: AuthenticatedRequest, res) => {
+  if (!db.prepare('UPDATE seller_notifications SET read_at=COALESCE(read_at,?) WHERE id=? AND seller_id=?').run(new Date().toISOString(), req.params.id, req.user!.id).changes) throw ApiError.notFound('Notification not found.');
+  res.json({ message: 'Notification marked as read.' });
 }));
 sellerWorkspaceRouter.post('/notifications/read-all', route((req: AuthenticatedRequest, res) => {
   db.prepare('UPDATE seller_notifications SET read_at=? WHERE seller_id=? AND read_at IS NULL').run(new Date().toISOString(), req.user!.id);
@@ -255,8 +270,8 @@ sellerWorkspaceRouter.post('/settings/security/password', rateLimit({ windowMs: 
 
 sellerWorkspaceRouter.get('/support', route((req: AuthenticatedRequest, res) => {
   const { page, pageSize, offset } = pagination(req);
-  const total = (db.prepare('SELECT COUNT(*) AS n FROM support_tickets WHERE seller_id=?').get(req.user!.id) as any).n;
-  res.json({ tickets: db.prepare('SELECT id,category,subject,message,order_id,status,created_at FROM support_tickets WHERE seller_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?').all(req.user!.id, pageSize, offset), pagination: pageMeta(total, page, pageSize) });
+  const total = (db.prepare("SELECT COUNT(*) AS n FROM support_tickets WHERE user_id=? AND role='seller'").get(req.user!.id) as any).n;
+  res.json({ tickets: db.prepare("SELECT id,category,subject,message,order_id,status,created_at FROM support_tickets WHERE user_id=? AND role='seller' ORDER BY created_at DESC LIMIT ? OFFSET ?").all(req.user!.id, pageSize, offset), pagination: pageMeta(total, page, pageSize) });
 }));
 sellerWorkspaceRouter.post('/support', rateLimit({ windowMs: 60 * 60_000, max: 10, keyPrefix: 'seller_support' }), route((req: AuthenticatedRequest, res) => {
   const category = requireEnum(req.body?.category, 'Issue type', ['order', 'payment', 'store', 'account', 'other'] as const);
@@ -268,6 +283,6 @@ sellerWorkspaceRouter.post('/support', rateLimit({ windowMs: 60 * 60_000, max: 1
     if (!db.prepare('SELECT id FROM orders WHERE id=? AND store_id=?').get(orderId, store.id)) throw ApiError.notFound('Order not found in your store.');
   }
   const id = randomId('ticket'); const now = new Date().toISOString();
-  db.prepare('INSERT INTO support_tickets (id,seller_id,category,subject,message,order_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(id, req.user!.id, category, subject, message, orderId, now, now);
+  db.prepare("INSERT INTO support_tickets (id,user_id,role,category,subject,message,order_id,created_at,updated_at) VALUES (?, ?, 'seller', ?, ?, ?, ?, ?, ?)").run(id, req.user!.id, category, subject, message, orderId, now, now);
   res.status(201).json({ ticket: db.prepare('SELECT id,category,subject,status,created_at FROM support_tickets WHERE id=?').get(id), message: 'Issue saved to your support queue. No response has been sent yet.' });
 }));

@@ -202,7 +202,7 @@ authRouter.post(
     });
 
     const session = createSession(id, role, { userAgent: req.headers['user-agent'] });
-    setSessionCookie(res, session.token, session.expiresAt);
+    setSessionCookie(res, session.token, session.expiresAt, req);
     logger.info('auth.registered', { userId: id, role, withStore: Boolean(store) });
 
     const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id);
@@ -261,7 +261,7 @@ authRouter.post(
     registerSuccessfulLogin(user.id);
     const remember = req.body?.remember !== false;
     const session = createSession(user.id, user.role, { userAgent: req.headers['user-agent'], remember });
-    setSessionCookie(res, session.token, session.expiresAt, remember);
+    setSessionCookie(res, session.token, session.expiresAt, req, remember);
     logger.info('auth.login', { userId: user.id, role: user.role });
 
     const fresh = db.prepare(`SELECT * FROM users WHERE id = ?`).get(user.id);

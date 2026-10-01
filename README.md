@@ -20,7 +20,7 @@ Every catalogue entry, cart, order, stock level, handoff code and status transit
 └───────────────┬───────────────┘
                 │ ACID transactions (BEGIN IMMEDIATE), atomic conditional UPDATEs
 ┌───────────────▼───────────────┐
-│  SQLite (node:sqlite, WAL)    │  migrations 001–008, 16 tables
+│  SQLite (node:sqlite, WAL)    │  migrations 001–010
 │  data/nearbuy.db              │  orders, inventory, delivery_jobs, handoff_events, …
 └───────────────────────────────┘
 ```
@@ -28,7 +28,7 @@ Every catalogue entry, cart, order, stock level, handoff code and status transit
 * **Frontend**: React 19 SPA, Tailwind CSS v4, Lucide icons, history-API router with real deep links, mobile-first layout.
 * **Backend**: Node 22 + Express 4, TypeScript end to end, `tsx server.ts` for dev and production.
 * **Database**: `node:sqlite` `DatabaseSync` in WAL mode with foreign keys, an idempotent migration runner and row-level concurrency control.
-* **Security**: scrypt password hashing with per-user salts, opaque session tokens stored **SHA-256-hashed** and delivered in an **HttpOnly, SameSite=Lax cookie** (no tokens in `localStorage`), server-side role authorization on every protected route, CSRF guards, sliding-window rate limits, structured logs with secret redaction.
+* **Security**: scrypt password hashing with per-user salts, opaque session tokens stored **SHA-256-hashed** and delivered in an **HttpOnly cookie** (SameSite=Lax on local HTTP; SameSite=None; Secure; Partitioned on HTTPS so the session survives the embedded preview). No tokens in `localStorage`. Server-side role authorization on every protected route, CSRF guards, sliding-window rate limits, structured logs with secret redaction.
 * **Handoff verification**:
   * **Seller pickup code (`PK-XXXX`)** — generated with `crypto.randomBytes`, revealed to the seller only once the order reaches `ready_for_pickup`, never shown to the customer.
   * **Customer delivery code (`DL-XXXX`)** — visible only to the ordering customer, never to the seller or to unrelated riders.
@@ -141,8 +141,26 @@ self-registration):
 * **Demo customer**: profile, one saved address (Flat 402, Shivani Apartments, Sector 10, Dwarka)
   and an **empty cart**.
 * **Demo rider**: pre-onboarded (Bike, DL 3C AB 1234), active and immediately eligible for jobs.
+* The seed also adds ~25 products across Dairy, Staples & Grains, Oils & Ghee, Bakery, Snacks, Beverages,
+  Personal Care, Household, Stationery, Pharmacy and Fruits & Vegetables, with brand/unit/MRP/SKU metadata.
+  Only six product/store images ship in `public/images/`; other items reuse the store image.
 * Additional discovery stores (Daily Needs Corner, Sharma General Store, City Pharmacy,
   Raj Fruits & Vegetables) keep search and multi-store checkout realistic.
+
+---
+
+### Portal APIs (all role-checked, ownership-scoped)
+
+| Area | Endpoints (prefix `/api/<role>`) |
+| :--- | :--- |
+| Customer discovery | `GET /customer/dashboard`, `/categories`, `/categories/:slug`, `/products`, `/products/:id`, `/stores`, `/stores/:id`, `/search`, `/areas` (all accept `lat`/`lng`; filters and pagination run in SQL) |
+| Customer commerce | `/cart`, `/cart/items`, `/checkout/quote`, `/checkout` (idempotency key + `expectedTotal`; 409 `price_changed` / `stock_conflict`), `/orders`, `/orders/:id`, `/orders/:id/reorder`, `/saved` |
+| Customer requests | `/stock-requests`, `/reservations` (confirming a stock request never holds stock; only a confirmed reservation does) |
+| Seller | `/store`, `/store/status`, `/store/settings`, `/store/preview`, `/products`, `/inventory`, `/inventory/events`, `/orders/:id/status`, `/orders/:id/complete-pickup`, `/earnings`, `/analytics` |
+| Rider | `/availability`, `/dashboard`, `/jobs`, `/jobs/active`, `/jobs/:id/{claim,start-pickup,pickup,start-delivery,arrived,delivery,release,report-issue}`, `/history`, `/earnings`, `/settlements`, `/profile`, `/vehicle`, `/service-area` |
+| Every role | `/notifications`, `/support`, `/security/sessions`, `/security/password`, `/settings` |
+
+Handoff secrets: the delivery code is returned only to the owning customer while the order is out for delivery (pickup orders: while ready for collection); `deliveryCodeState` (`locked | available | used | unavailable`) tells the UI what to show. The pickup code is returned only to the owning seller once the order is ready. Riders only *submit* codes.
 
 ---
 
@@ -182,15 +200,20 @@ self-registration):
 ```bash
 npm install                 # install dependencies
 npm run db:seed             # idempotent demo/staging seed (safe to re-run)
-npm run dev                 # dev server on http://0.0.0.0:3000 (Vite middleware + HMR)
+npm run dev                 # builds the SPA, then serves API + bundle on http://0.0.0.0:3000 (clean console, works in hosted previews)
+npm run dev:hmr             # Vite middleware + HMR for live editing (local only)
 
 npm run lint                # TypeScript type check (tsc --noEmit)
 npm run build               # production SPA build into dist/
 NODE_ENV=production npm start   # serve the API + built SPA (SPA fallback for deep links)
 
-npm test                    # unit + API + DOM + production-routing suites
+npm test                    # unit + API + portal + e2e + DOM + production-routing suites
 npm run test:unit           # pricing, password policy, codes, state machine, rate limiter, demo gating
 npm run test:api            # HTTP integration: authz, discovery, idempotency, races, full handoff, restart
+npm run test:portal         # handoff-code secrecy, rider eligibility, multi-store checkout, pickup, store status, reorder, saved, notifications, seller earnings
+npm run test:e2e            # customer / rider / cross-role journeys over the real HTTP API + DB (incl. logout → login persistence)
+npm run test:live           # mounts the real SPA against the real server/DB and renders every page of every portal, failing on any API error or error state
+npm run test:ui             # clicks through the real SPA: login/signup, checkout, seller order flow, rider claim + codes, inventory, store open/close, requests/reservations
 npm run test:dom            # happy-dom render of the real SPA against a stubbed API
 npm run test:routing        # production deep links / assets / JSON 404s (run build first)
 ```
@@ -231,7 +254,7 @@ Copy `.env.example` → `.env` and adjust. Nothing here needs to be shared as a 
 ```http
 GET /health        → { "status": "ok", "app": "NearBuy", "version": "2.0.0", "uptimeSeconds": … }
 GET /health/ready  → { "status": "ready", "database": "connected",
-                       "migrationsApplied": 8, "latestMigration": "008_delivery_jobs_ops",
+                       "migrationsApplied": 10, "latestMigration": "010_portal_features",
                        "demoMode": false }
 ```
 
@@ -246,7 +269,7 @@ The app is a single Node process that serves both the API and the built SPA, so 
 ### Render (blueprint — fastest path)
 1. Push this branch to GitHub (already done: `arena/01a0f344-siddhart`).
 2. In Render: **New → Blueprint**, pick the repository and the branch, and apply `render.yaml`. It creates a Docker web service with a 1 GB disk mounted at `/app/data`, `DATABASE_FILE=/app/data/nearbuy.db`, `COOKIE_SECURE=true` and health check `/health/ready`.
-3. When the first deploy finishes, set `APP_URL` to the assigned `https://<service>.onrender.com` URL in **Environment** and redeploy. On the first boot the service runs migrations 001–008 and (with `ENABLE_DEMO_ACCOUNTS=true`) seeds the demo data.
+3. When the first deploy finishes, set `APP_URL` to the assigned `https://<service>.onrender.com` URL in **Environment** and redeploy. On the first boot the service runs migrations 001–010 and (with `ENABLE_DEMO_ACCOUNTS=true`) seeds the demo data.
 4. Remove `ENABLE_DEMO_ACCOUNTS` (or set it to `false`) and delete the demo accounts before treating the deployment as production.
 
 ### Railway / Fly.io / any Node host

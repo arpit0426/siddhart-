@@ -52,6 +52,10 @@ export const config = {
   /** Business rules */
   deliveryFeePerStore: num(process.env.DELIVERY_FEE_PER_STORE, 30),
   freeDeliveryThreshold: num(process.env.FREE_DELIVERY_THRESHOLD, 0),
+  /** Flat payout to the rider for each completed delivery (INR). */
+  riderPayoutPerDelivery: num(process.env.RIDER_PAYOUT_PER_DELIVERY, 40),
+  /** Platform commission deducted from seller sales in earnings views (percent). */
+  platformFeePercent: num(process.env.PLATFORM_FEE_PERCENT, 0),
   reservationHoldHours: num(process.env.RESERVATION_HOLD_HOURS, 24),
   lowStockThreshold: num(process.env.LOW_STOCK_THRESHOLD, 5),
   uploadsDir: process.env.UPLOADS_DIR

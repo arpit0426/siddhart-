@@ -13,6 +13,9 @@ import { assertSellerTransition, ORDER_STATUSES, statusLabel } from '../orderSta
 import { hydrateOrder } from './customer.routes.js';
 import { auditSeller, dateFilter, pageMeta, pagination, priceFilters, queryText, requireSellerStore, sellerStore } from '../seller.js';
 import { publicStore, storefrontProducts } from '../storefront.js';
+import { buildAccountRouter } from './account.routes.js';
+import { audit, notifyCustomerOfOrder } from '../notifications.js';
+import { decorateStore, queryProducts } from '../catalog.js';
 import { sellerWorkspaceRouter } from './seller-workspace.routes.js';
 import { optionalCoordinate, optionalPhone, optionalString, requireEmail, requireEnum, requireNumber, requirePincode, requirePositiveInt, requireString, sanitizeText } from '../validation.js';
 
@@ -50,7 +53,9 @@ function imageList(value: unknown): string {
 sellerRouter.get('/store', route((req: AuthenticatedRequest, res) => res.json({ store: sellerStore(req.user!.id) })));
 sellerRouter.get('/store/preview', route((req: AuthenticatedRequest, res) => {
   const store = requireSellerStore(req.user!.id);
-  res.json({ store: publicStore(store), products: storefrontProducts(store.id) });
+  const products = queryProducts({ ...req.query, storeId: store.id, includeUnpublishedStores: true });
+  const categories = db.prepare('SELECT category,COUNT(*) AS count FROM products WHERE store_id=? AND is_published=1 GROUP BY category ORDER BY category').all(store.id);
+  res.json({ store: decorateStore(publicStore(store)), visibleToCustomers: Boolean(store.is_published && store.status !== 'inactive'), categories, ...products });
 }));
 sellerRouter.post('/store', route((req: AuthenticatedRequest, res) => {
   const sellerId = req.user!.id;
@@ -130,6 +135,102 @@ for (const publish of [true, false]) {
   }));
 }
 
+/* Keep the status/settings API already shipped on main. */
+sellerRouter.put(
+  '/store/status',
+  route((req: AuthenticatedRequest, res) => {
+    const store = requireSellerStore(req.user!.id);
+    const status = requireEnum(req.body?.status, 'Store status', ['open', 'closed'] as const);
+    const closureType =
+      status === 'closed'
+        ? requireEnum(req.body?.closureType ?? 'closed', 'Closure type', ['closed', 'temporarily_unavailable'] as const)
+        : null;
+    const message = optionalString(req.body?.message, 'Message', { max: 160 }) || null;
+    if (status === 'open' && !store.is_published) throw ApiError.conflict('Publish your store before opening it for orders.');
+    const now = new Date().toISOString();
+    db.prepare(
+      `UPDATE stores SET status = ?, closure_type = ?, status_message = ?, temporarily_unavailable = ?,
+         published_at = COALESCE(published_at, ?), updated_at = ? WHERE id = ?`
+    ).run(status, closureType, status === 'closed' ? message : null, closureType === 'temporarily_unavailable' ? 1 : 0, now, now, store.id);
+    audit(req.user!.id, 'seller', `store.${status}`, 'store', store.id, { closureType });
+    res.json({
+      store: sellerStore(req.user!.id),
+      message:
+        status === 'open'
+          ? 'Your store is open. Customers can place new orders.'
+          : 'Your store is closed. Customers can browse but cannot check out; open orders stay active.',
+    });
+  })
+);
+
+sellerRouter.put(
+  '/store/settings',
+  route((req: AuthenticatedRequest, res) => {
+    const store = requireSellerStore(req.user!.id);
+    const bool = (v: unknown, current: number) => (v === undefined ? current : v ? 1 : 0);
+    const minutes = (v: unknown, label: string, current: number | null) =>
+      v === undefined || v === null || v === ''
+        ? v === undefined ? current : null
+        : requirePositiveInt(v, label, { min: 5, max: 480 });
+    const fMin = minutes(req.body?.fulfilmentMinMinutes, 'Minimum fulfilment time', store.fulfilment_min_minutes);
+    const fMax = minutes(req.body?.fulfilmentMaxMinutes, 'Maximum fulfilment time', store.fulfilment_max_minutes);
+    if (fMin !== null && fMax !== null && fMin > fMax) {
+      throw ApiError.badRequest('Minimum fulfilment time cannot exceed the maximum.');
+    }
+    const supportsDelivery = bool(req.body?.supportsDelivery, store.supports_delivery);
+    const supportsPickup = bool(req.body?.supportsPickup, store.supports_pickup);
+    if (!supportsDelivery && !supportsPickup) {
+      throw ApiError.badRequest('Enable at least one of delivery or pickup.');
+    }
+    const logo = req.body?.logo !== undefined ? optionalString(req.body.logo, 'Logo', { max: 500 }) || null : store.logo;
+    db.prepare(
+      `UPDATE stores SET supports_delivery = ?, supports_pickup = ?, supports_reservations = ?,
+         fulfilment_min_minutes = ?, fulfilment_max_minutes = ?, logo = ?,
+         legal_name = ?, business_email = ?, support_phone = ?, updated_at = ? WHERE id = ?`
+    ).run(
+      supportsDelivery,
+      supportsPickup,
+      bool(req.body?.supportsReservations, store.supports_reservations),
+      fMin,
+      fMax,
+      logo,
+      req.body?.legalName !== undefined ? optionalString(req.body.legalName, 'Legal name', { max: 120 }) || null : store.legal_name,
+      req.body?.businessEmail !== undefined ? optionalString(req.body.businessEmail, 'Business email', { max: 120 }) || null : store.business_email,
+      req.body?.supportPhone !== undefined ? optionalPhone(req.body.supportPhone) || null : store.support_phone,
+      new Date().toISOString(),
+      store.id
+    );
+    res.json({ store: sellerStore(req.user!.id), message: 'Store settings saved.' });
+  })
+);
+
+
+sellerRouter.get(
+  '/inventory/events',
+  route((req: AuthenticatedRequest, res) => {
+    const store = sellerStore(req.user!.id);
+    if (!store) {
+      res.json({ events: [], total: 0, page: 1 });
+      return;
+    }
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 30));
+    const productId = typeof req.query.productId === 'string' ? req.query.productId : null;
+    const where = `e.store_id = ? ${productId ? 'AND e.product_id = ?' : ''}`;
+    const params: any[] = productId ? [store.id, productId] : [store.id];
+    const total = (db.prepare(`SELECT COUNT(*) AS c FROM inventory_events e WHERE ${where}`).get(...params) as any).c;
+    const events = db
+      .prepare(
+        `SELECT e.id, e.product_id, p.name AS product_name, e.type, e.delta, e.resulting_stock, e.note, e.created_at
+         FROM inventory_events e JOIN products p ON p.id = e.product_id
+         WHERE ${where} ORDER BY e.created_at DESC, e.rowid DESC LIMIT ? OFFSET ?`
+      )
+      .all(...params, pageSize, (page - 1) * pageSize);
+    res.json({ events, total, page, pageSize, hasMore: page * pageSize < total });
+  })
+);
+
+
 /* Catalog and inventory: bounded SQL queries, ownership checked on every ID. */
 function catalogFilters(req: any, storeId: string) {
   const clauses = ['p.store_id = ?']; const values: any[] = [storeId];
@@ -186,6 +287,7 @@ function productInput(body: any, existing: any = {}) {
     name: sanitizeText(requireString(body.name ?? existing.name, 'Product name', { min: 2, max: 120 })),
     description: sanitizeText(optionalString(body.description ?? existing.description, 'Description', { max: 600 }) ?? ''),
     category: requireEnum(body.category ?? existing.category ?? 'Grocery', 'Category', PRODUCT_CATEGORIES), price, mrp,
+    productInfo: body.productInfo === undefined ? existing.product_info ?? null : sanitizeText(optionalString(body.productInfo, 'Product information', { max: 1000 }) ?? ''),
     brand: optionalString(body.brand ?? existing.brand, 'Brand', { max: 80 }) ?? null,
     unit: optionalString(body.unit ?? existing.unit, 'Unit / size', { max: 40 }) ?? null,
     sku: optionalString(body.sku ?? existing.sku, 'SKU', { max: 60 }) ?? null,
@@ -208,9 +310,9 @@ sellerRouter.post('/products', route((req: AuthenticatedRequest, res) => {
   withTransaction(() => {
     assertUniqueSku(store.id, input.sku);
     db.prepare(`INSERT INTO products (id,store_id,name,description,category,price,mrp,brand,unit,sku,image,additional_images,
-      availability,is_published,stock,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      availability,is_published,stock,product_info,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, store.id, input.name, input.description, input.category, input.price, input.mrp, input.brand, input.unit,
-        input.sku, input.image, input.images, input.availability, input.published, stock, now, now);
+        input.sku, input.image, input.images, input.availability, input.published, stock, input.productInfo, now, now);
     createInventoryForProduct(id, stock);
     db.prepare('UPDATE inventory SET low_stock_threshold=? WHERE product_id=?').run(input.threshold, id);
     auditSeller(req.user!.id, 'product.created', id);
@@ -226,9 +328,9 @@ sellerRouter.put('/products/:id', route((req: AuthenticatedRequest, res) => {
   withTransaction(() => {
     assertUniqueSku(store.id, input.sku, existing.id);
     db.prepare(`UPDATE products SET name=?,description=?,category=?,price=?,mrp=?,brand=?,unit=?,sku=?,image=?,additional_images=?,
-      availability=?,is_published=?,updated_at=? WHERE id=? AND store_id=?`)
+      availability=?,is_published=?,product_info=?,updated_at=? WHERE id=? AND store_id=?`)
       .run(input.name, input.description, input.category, input.price, input.mrp, input.brand, input.unit, input.sku, input.image,
-        input.images, input.availability, input.published, now, existing.id, store.id);
+        input.images, input.availability, input.published, input.productInfo, now, existing.id, store.id);
     if (req.body?.stock !== undefined) {
       const desired = requirePositiveInt(req.body.stock, 'Stock', { min: 0, max: 100000 });
       const expectedVersion = req.body.expectedVersion === undefined ? undefined : requirePositiveInt(req.body.expectedVersion, 'Inventory version');
@@ -327,6 +429,7 @@ sellerRouter.post('/orders/:id/status', route((req: AuthenticatedRequest, res) =
     db.prepare(`INSERT INTO handoff_events (id,order_id,event_type,actor_role,actor_id,note,created_at) VALUES (?,?,?,'seller',?,?,?)`)
       .run(randomId('he'), order.id, `ORDER_${target.toUpperCase()}`, req.user!.id, reason ?? `Marked ${statusLabel(target)}`, now);
     auditSeller(req.user!.id, 'order.status', order.id, `${order.status} → ${target}`);
+    notifyCustomerOfOrder(order.customer_id, order.id, order.order_number, target, reason);
   });
   res.json({ order: hydrateOrder(req.params.id, 'seller'), message: `Order marked ${statusLabel(target)}.` });
 }));
@@ -358,6 +461,32 @@ sellerRouter.post('/orders/:id/verify-rider', rateLimit({ windowMs: 15 * 60_000,
   });
   res.json({ order: hydrateOrder(req.params.id, 'seller'), message: 'Assigned rider verified. You can now complete the pickup.' });
 }));
+/* Preserve main's authorized customer collection flow, without disclosing a delivery code. */
+const completeCustomerPickup = route((req: AuthenticatedRequest, res) => {
+  withTransaction(() => {
+    const order = ownedOrder(req.user!.id, req.params.id);
+    if (order.fulfillment_type !== 'pickup') throw ApiError.badRequest('Delivery orders must use the assigned-rider handover workflow.');
+    if (order.status !== 'ready_for_pickup') throw ApiError.badRequest('This order is not ready for collection yet.');
+    const code = requireString(req.body?.code ?? req.body?.pickupCode, 'Customer collection code', { min: 4, max: 12 });
+    if (!codesMatch(code, order.delivery_code)) throw ApiError.badRequest('That code does not match. Ask the customer to check their order page.', 'invalid_code');
+    const now = new Date().toISOString();
+    db.prepare("UPDATE orders SET status='delivered',delivered_at=?,updated_at=? WHERE id=? AND status='ready_for_pickup'").run(now, now, order.id);
+    db.prepare("INSERT INTO handoff_events (id,order_id,event_type,actor_role,actor_id,note,created_at) VALUES (?,?,'ORDER_DELIVERED','seller',?,'Collected in store',?)").run(randomId('he'), order.id, req.user!.id, now);
+    notifyCustomerOfOrder(order.customer_id, order.id, order.order_number, 'delivered');
+    auditSeller(req.user!.id, 'pickup.customer_collected', order.id);
+  });
+  res.json({ message: 'Pickup completed.', order: hydrateOrder(req.params.id, 'seller') });
+});
+const customerCollectionLimit = rateLimit({ windowMs: 10 * 60_000, max: 20, keyPrefix: 'complete_customer_pickup' });
+sellerRouter.post('/orders/:id/customer-pickup', customerCollectionLimit, completeCustomerPickup);
+sellerRouter.post('/orders/:id/complete-pickup', (req: AuthenticatedRequest, res, next) => {
+  try {
+    const order = ownedOrder(req.user!.id, req.params.id);
+    if (order.fulfillment_type !== 'pickup') return next();
+    customerCollectionLimit(req, res, (error) => error ? next(error) : completeCustomerPickup(req, res, next));
+  } catch (error) { next(error); }
+});
+
 sellerRouter.post('/orders/:id/complete-pickup', rateLimit({ windowMs: 15 * 60_000, max: 15, keyPrefix: 'seller_pickup' }), route((req: AuthenticatedRequest, res) => {
   const { order, job } = pickupJob(req.user!.id, req.params.id);
   if (!job.seller_verified_at || job.seller_verified_rider_id !== job.rider_id) throw ApiError.conflict('Verify the currently assigned rider in person first.');
@@ -476,3 +605,5 @@ sellerRouter.post('/uploads', rateLimit({ windowMs: 10 * 60_000, max: 30, keyPre
 }));
 
 sellerRouter.use(sellerWorkspaceRouter);
+// Retain existing account/security API aliases for clients on main.
+sellerRouter.use(buildAccountRouter('seller'));

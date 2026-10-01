@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { api, ApiRequestError, SESSION_EXPIRED_EVENT } from '../lib/api';
+import { api, ApiRequestError, SESSION_EXPIRED_EVENT, setSessionToken } from '../lib/api';
+import { resetSavedCache } from '../lib/saved';
 import type { AppConfig, Role, User } from '../types';
 
 /**
@@ -80,7 +81,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const onExpired = () => {
+      setSessionToken(null);
       setUser(null);
+      // A different account may sign in next: drop the previous customer's cache.
+      resetSavedCache();
       // The role auth screens surface "Your session has expired. Please sign in again."
       try {
         window.sessionStorage.setItem('nearbuy:session-expired', 'expired');
@@ -100,6 +104,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         expectedRole: role,
         remember,
       });
+      // Fresh workspace: never carry another session's saved-items cache across login.
+      resetSavedCache();
       setUser(data.user);
       return data.user;
     },
@@ -130,6 +136,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }) => {
       const data = await api.post<{ user: User }>('/api/auth/register', input);
+      // Fresh workspace: never carry another session's saved-items cache across signup.
+      resetSavedCache();
       setUser(data.user);
       return data.user;
     },
@@ -137,7 +145,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   const logout = useCallback(async () => {
-    await api.post('/api/auth/logout');
+    try {
+      await api.post('/api/auth/logout');
+    } catch (error) {
+      // An already-expired server session is logged out; other failures must
+      // remain visible rather than pretending the server revoked the session.
+      if (!(error instanceof ApiRequestError) || error.status !== 401) throw error;
+    }
+    setSessionToken(null);
+    resetSavedCache();
     setUser(null);
   }, []);
 

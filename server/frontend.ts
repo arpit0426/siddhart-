@@ -115,7 +115,12 @@ export function pageRoutingGuard(req: Request, res: Response, next: NextFunction
 export async function attachFrontend(app: Express): Promise<void> {
   app.get(/^(?!\/api|\/uploads).*/, pageRoutingGuard);
 
-  if (!config.isProduction) {
+  // Default everywhere (including the hosted preview): serve the built bundle.
+  // It has no HMR websocket, so the page loads with a clean console. Opt into the
+  // Vite dev server for live editing with `npm run dev:hmr` (USE_VITE=true); it is
+  // also the fallback when no bundle has been built yet.
+  const builtBundle = fs.existsSync(path.join(distPath, 'index.html'));
+  if (!config.isProduction && (process.env.USE_VITE === 'true' || !builtBundle)) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
