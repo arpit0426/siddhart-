@@ -200,7 +200,8 @@ Handoff secrets: the delivery code is returned only to the owning customer while
 ```bash
 npm install                 # install dependencies
 npm run db:seed             # idempotent demo/staging seed (safe to re-run)
-npm run dev                 # dev server on http://0.0.0.0:3000 (Vite middleware + HMR)
+npm run dev                 # builds the SPA, then serves API + bundle on http://0.0.0.0:3000 (clean console, works in hosted previews)
+npm run dev:hmr             # Vite middleware + HMR for live editing (local only)
 
 npm run lint                # TypeScript type check (tsc --noEmit)
 npm run build               # production SPA build into dist/
