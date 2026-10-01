@@ -756,6 +756,16 @@ export const migrations: Migration[] = [
           href TEXT NOT NULL, event_key TEXT, read_at TEXT, created_at TEXT NOT NULL,
           UNIQUE(seller_id, event_key)
         );
+        INSERT INTO business_profiles (seller_id,legal_name,owner_name,phone,email,category,address,business_identifier,support_contact,updated_at)
+          SELECT s.seller_id,COALESCE(s.legal_name,''),u.name,COALESCE(s.contact_phone,u.phone),
+            COALESCE(s.business_email,u.email),s.category,s.address,s.business_id,s.support_phone,s.updated_at
+          FROM stores s JOIN users u ON u.id=s.seller_id;
+        INSERT INTO seller_notifications (id,seller_id,category,title,body,href,event_key,read_at,created_at)
+          SELECT n.id,n.user_id,
+            CASE n.type WHEN 'inventory' THEN 'inventory' WHEN 'reservation' THEN 'reservation'
+              WHEN 'stock_request' THEN 'stock_check' WHEN 'earnings' THEN 'payout' WHEN 'account' THEN 'security' ELSE 'orders' END,
+            n.title,n.body,COALESCE(n.link,'/seller/notifications'),'legacy:' || n.id,n.read_at,n.created_at
+          FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role='seller';
         CREATE INDEX idx_seller_notifications_unread ON seller_notifications(seller_id, read_at, created_at DESC);
         CREATE TABLE seller_audit_events (
           id TEXT PRIMARY KEY, seller_id TEXT NOT NULL REFERENCES users(id),

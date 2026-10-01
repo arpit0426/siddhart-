@@ -65,6 +65,12 @@ export function pageRoutingGuard(req: Request, res: Response, next: NextFunction
     return;
   }
 
+  // The bare seller workspace URL is an alias of the dashboard.
+  if (pathOnly === '/seller') {
+    redirect(res, '/seller/dashboard');
+    return;
+  }
+
   const role = sessionRole(req);
 
   // Root: gateway for visitors, the signed-in user's workspace otherwise.

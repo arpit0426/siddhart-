@@ -326,6 +326,10 @@ const Shell: React.FC = () => {
 
   // Workspace home shortcuts for signed-in users hitting the landing page.
   React.useEffect(() => {
+    if (user?.role === 'seller' && path === '/seller') {
+      navigate('/seller/dashboard', { replace: true });
+      return;
+    }
     if (user && (path === '/' || /^\/(customer|seller|rider)\/(auth|signup|recover)(\?|$)/.test(path))) {
       const home = roleHome(user.role);
       navigate(home, { replace: true });

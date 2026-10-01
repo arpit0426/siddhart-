@@ -117,7 +117,7 @@ const EMAILS = {
 
 /* Scenario 1: fresh visitor logs in through each role's login page. */
 await suite.test('fresh login through the login page lands in the role workspace', async () => {
-  const landing = { customer: /Shop by category/, seller: /Dashboard/, rider: /You are (online|offline)/ } as const;
+  const landing = { customer: /Shop by category/, seller: /Needs your attention/i, rider: /You are (online|offline)/ } as const;
   for (const role of ['customer', 'seller', 'rider'] as const) {
     resetBrowserSession();
     const app = mount(`/${role}/auth`);
@@ -231,6 +231,70 @@ await suite.test('sign out then sign back in reopens the workspace cleanly', asy
   assert.equal(window.location.pathname, '/customer');
   assert.deepEqual([...apiFailures], [], 're-login: unexpected API failures');
   assert.deepEqual([...consoleErrors], [], 're-login: console errors');
+  app.unmount();
+});
+
+/* Scenario 7: seller login opens the dedicated seller workspace with real data. */
+await suite.test('seller login opens the seller workspace shell without errors', async () => {
+  resetBrowserSession();
+  const app = mount('/seller/auth?next=%2Fseller');
+  await app.type(/Email/, EMAILS.seller);
+  await app.type(/Password/, 'NearBuy@2026');
+  await app.click(/^Login$/);
+  await app.waitFor(/Needs your attention/i);
+  assert.equal(window.location.pathname, '/seller/dashboard');
+  await sleep(600);
+  const text = app.text();
+  for (const label of ['Dashboard', 'Orders', 'Products', 'Inventory', 'Reservations', 'Stock Requests', 'Analytics', 'Earnings', 'Dwarka Fresh Mart', "Today's Orders", "Today's Sales", 'Pending Orders', 'Live order board']) {
+    assert.ok(text.includes(label), `seller workspace should show "${label}"`);
+  }
+  assert.ok(/Good (morning|afternoon|evening), Rahul/.test(text), 'greets the seller by first name');
+  assert.ok(document.querySelector('button[aria-label="Logout"]'), 'logout is accessible');
+  assert.ok(document.querySelector('aside nav[aria-label="Seller workspace"]'), 'desktop sidebar present');
+  assert.ok(document.querySelector('nav[aria-label="Mobile seller navigation"]'), 'mobile bottom navigation present');
+  assert.ok(!/This workspace is for|Redirecting to sign in|Something went wrong|couldn't load/i.test(text), 'no gate or error state');
+  assert.deepEqual([...apiFailures], [], 'seller: unexpected API failures after login');
+  assert.deepEqual([...consoleErrors], [], 'seller: console errors after login');
+  app.unmount();
+});
+
+/* Scenario 8: every seller page opens cleanly; logout and demo re-entry work. */
+await suite.test('every seller page opens cleanly and seller can log out and back in', async () => {
+  resetBrowserSession();
+  const app = mount('/seller/auth');
+  await app.click(/Use Demo Account/);
+  await app.waitFor(/Needs your attention/i);
+  assert.equal(window.location.pathname, '/seller/dashboard');
+  apiFailures.length = 0;
+  const { navigate } = await import('../../src/lib/router');
+  const pages: [string, RegExp][] = [
+    ['/seller/orders', /Orders/],
+    ['/seller/products', /Products/],
+    ['/seller/inventory', /Inventory/],
+    ['/seller/reservations', /Reservations/],
+    ['/seller/stock-requests', /Stock requests/],
+    ['/seller/store', /My store/i],
+    ['/seller/analytics', /Analytics|Performance/i],
+    ['/seller/earnings', /Earnings|Gross/],
+    ['/seller/notifications', /Notifications/],
+    ['/seller/support', /Support|Help/],
+    ['/seller/profile', /My profile|Edit profile/i],
+    ['/seller/business', /Business profile/i],
+    ['/seller/settings', /Settings/],
+    ['/seller/settings/security', /Security|Password/],
+    ['/seller', /Needs your attention/i],
+  ];
+  for (const [path, pattern] of pages) {
+    navigate(path);
+    await app.waitFor(pattern);
+    assert.ok(!/This workspace is for|Page not found|couldn't load/i.test(app.text()), `${path}: gate or error shown`);
+  }
+  assert.equal(window.location.pathname, '/seller/dashboard', 'bare /seller resolves to the dashboard');
+  assert.deepEqual([...apiFailures], [], 'seller pages: unexpected API failures');
+
+  await app.click(/^Logout$/);
+  await app.waitFor(/Choose your role to continue/);
+  assert.equal(window.location.pathname, '/');
   app.unmount();
 });
 

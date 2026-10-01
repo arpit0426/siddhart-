@@ -382,12 +382,14 @@ sellerRouter.get('/orders', route((req: AuthenticatedRequest, res) => {
   const tabGroups: Record<string, string[]> = { new: ['placed'], preparing: ['accepted', 'preparing', 'packed'], ready: ['ready_for_pickup'], completed: ['delivered'], cancelled: ['cancelled', 'rejected'] };
   if (req.query.status) {
     const status = String(req.query.status);
-    const statuses = tabGroups[status] ?? [requireEnum(status, 'Status', ORDER_STATUSES)];
-    clauses.push(`status IN (${statuses.map(() => '?').join(',')})`); values.push(...statuses);
+    // Retain main's comma-separated status and q search API, as well as the
+    // seller workspace's named tabs. Unknown read filters do not widen ownership.
+    const statuses = tabGroups[status] ?? status.split(',').map((s) => s.trim()).filter((s) => ORDER_STATUSES.includes(s as any));
+    if (statuses.length) { clauses.push(`status IN (${statuses.map(() => '?').join(',')})`); values.push(...statuses); }
   }
   if (req.query.fulfillment) { clauses.push('fulfillment_type=?'); values.push(requireEnum(req.query.fulfillment, 'Fulfilment', ['delivery', 'pickup'] as const)); }
-  const search = queryText(req.query.query);
-  if (search) { clauses.push('(order_number LIKE ? OR id LIKE ?)'); values.push(`%${search}%`, `%${search}%`); }
+  const search = queryText(req.query.query ?? req.query.q);
+  if (search) { const like = `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%`; clauses.push("(order_number LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\')"); values.push(like, like); }
   if (req.query.date) { clauses.push("date(created_at,'+5 hours','+30 minutes')=?"); values.push(dateFilter(req.query.date)); }
   priceFilters(req, 'total', clauses, values);
   const where = clauses.join(' AND ');

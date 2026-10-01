@@ -140,7 +140,8 @@ await suite.test('seller portal: every page renders real data without errors', a
   const sellerOrders = await seller.get('/api/seller/orders');
   const sellerOrderId = sellerOrders.body.orders[0].id as string;
   const routes: [string, RegExp?][] = [
-    ['/seller', /Dashboard|dashboard|orders/i],
+    ['/seller/dashboard', /Needs your attention/i],
+    ['/seller', /Needs your attention/i],
     ['/seller/orders', /Orders/],
     [`/seller/orders/${sellerOrderId}`, /NB-/],
     ['/seller/products', /Products/],
@@ -154,6 +155,13 @@ await suite.test('seller portal: every page renders real data without errors', a
     ['/seller/notifications'],
     ['/seller/support'],
     ['/seller/security'],
+    ['/seller/stock-requests', /Stock requests/],
+    ['/seller/reservations', /Reservations/],
+    ['/seller/analytics', /Analytics|Performance/i],
+    ['/seller/profile', /My profile|Edit profile/i],
+    ['/seller/business', /Business profile/i],
+    ['/seller/settings', /Settings/],
+    ['/seller/settings/security'],
   ];
   const failures: string[] = [];
   for (const [path, text] of routes) {

@@ -71,7 +71,7 @@ function Workspace({ children }: { children: React.ReactNode }) {
     document.addEventListener('pointerdown', onClick); document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('pointerdown', onClick); document.removeEventListener('keydown', onKey); };
   }, []);
-  const signOut = async () => { try { await logout(); navigate('/seller/auth'); } catch (error) { toast.push({ title: 'Could not sign out', description: errorMessage(error), tone: 'error' }); } };
+  const signOut = async () => { try { await logout(); navigate('/'); } catch (error) { toast.push({ title: 'Could not sign out', description: errorMessage(error), tone: 'error' }); } };
   const changeStatus = async (status: 'open' | 'closed' | 'temporary') => {
     setSaving(true); setStatusError(null);
     try { const result = await api.post<{ message: string }>('/api/seller/store/status', { status }); refreshSeller(); setStatusModal(false); toast.push({ title: result.message, tone: 'success' }); }
@@ -86,7 +86,7 @@ function Workspace({ children }: { children: React.ReactNode }) {
     <aside className="seller-sidebar"><Link to="/seller/dashboard" className="seller-brand" aria-label="NearBuy Seller dashboard"><NearBuyWordmark size={35} /><span>SELLER</span></Link>
       <div className="seller-store-selector"><span className="seller-store-selector-icon"><Store size={19} /></span><div><strong>{store?.name ?? 'Your local store'}</strong><span>Seller workspace</span></div><ChevronDown size={15} /></div>
       {navigation()}
-      <div className="seller-sidebar-bottom"><Link to="/seller/profile" className="seller-sidebar-profile"><Avatar name={user!.name} src={user!.profileImage} /><span><strong>{user!.name}</strong><small><i className={isOpen ? 'online' : ''} />{isOpen ? 'Online' : 'Offline'} · Seller</small></span></Link><button aria-label="Logout" onClick={signOut}><LogOut size={17} /></button></div>
+      <div className="seller-sidebar-bottom"><Link to="/seller/profile" className="seller-sidebar-profile"><Avatar name={user!.name} src={user!.profileImage} /><span><strong>{user!.name}</strong><small><i className={isOpen ? 'online' : ''} />{isOpen ? 'Online' : 'Offline'} · Seller</small></span></Link><button aria-label="Logout" onClick={signOut}><LogOut size={17} /><span className="sr-only">Logout</span></button></div>
     </aside>
     <div className="seller-content"><header className="seller-topbar"><div className="seller-mobile-brand"><Link to="/seller/dashboard"><NearBuyWordmark size={28} /></Link></div><GlobalSearch />
       <div className="seller-topbar-actions">{store && <button className="seller-status-control" onClick={() => { setStatusModal(true); setStatusError(null); }} aria-label={isOpen ? 'Close store' : 'Open store'}><StoreStatus store={store} /><span className={`seller-switch ${isOpen ? 'on' : ''}`} aria-hidden="true"><i /></span></button>}

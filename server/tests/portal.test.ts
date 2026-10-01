@@ -334,5 +334,39 @@ await suite.test('seller earnings, store preview, settings and profile save stay
   assert.equal(reopened.body.store.status, 'open');
 });
 
+await suite.test('seller order list filters by status group and order number; dashboard exposes the live board', async () => {
+  const all = await seller.get('/api/seller/orders');
+  assert.equal(all.status, 200);
+  const orders = all.body.orders as any[];
+  assert.ok(orders.length > 0, 'demo seller has orders');
+
+  const target = orders[0];
+  const bySearch = await seller.get(`/api/seller/orders?q=${encodeURIComponent(String(target.orderNumber).slice(-6))}`);
+  assert.equal(bySearch.status, 200);
+  assert.ok((bySearch.body.orders as any[]).some((o) => o.id === target.id), 'search finds the order by number');
+
+  const group = await seller.get('/api/seller/orders?status=accepted,preparing,packed');
+  assert.equal(group.status, 200);
+  for (const order of group.body.orders as any[]) {
+    assert.ok(['accepted', 'preparing', 'packed'].includes(order.status), `unexpected ${order.status} in group`);
+  }
+
+  // Injection-style input is treated as plain data.
+  const hostile = await seller.get(`/api/seller/orders?q=${encodeURIComponent("' OR 1=1 --")}`);
+  assert.equal(hostile.status, 200);
+  assert.equal((hostile.body.orders as any[]).length, 0);
+  const unknown = await seller.get('/api/seller/orders?status=bogus');
+  assert.equal(unknown.status, 200);
+
+  const dash = await seller.get('/api/seller/dashboard');
+  assert.equal(dash.status, 200);
+  assert.ok(Array.isArray(dash.body.liveOrders));
+  for (const order of dash.body.liveOrders as any[]) {
+    assert.ok(['placed', 'accepted', 'preparing', 'packed', 'ready_for_pickup'].includes(order.status));
+    assert.equal(order.deliveryCode, undefined, 'seller never sees the customer delivery code');
+  }
+  assert.equal(typeof dash.body.metrics.lowStockCount, 'number');
+});
+
 suite.summary();
 await server.close();

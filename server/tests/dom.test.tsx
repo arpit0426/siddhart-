@@ -395,6 +395,15 @@ await suite.test('signed-in seller sees the order workspace', async () => {
   const view = await renderAt('/seller/orders', seller);
   assert.match(view.text, /Orders/);
   assert.match(view.text, /No orders in this view/);
+  // Dedicated seller workspace chrome: sidebar groups, bottom navigation and tabs.
+  for (const label of ['Dashboard', 'Inventory', 'Reservations', 'Stock Requests', 'Analytics', 'Earnings', 'Logout']) {
+    assert.match(view.text, new RegExp(label), `seller shell should expose ${label}`);
+  }
+  assert.match(view.text, /Home/);
+  assert.match(view.text, /More/);
+  for (const tab of ['All', 'New', 'Preparing', 'Ready', 'Completed', 'Cancelled']) {
+    assert.match(view.text, new RegExp(tab));
+  }
   view.cleanup();
 });
 
