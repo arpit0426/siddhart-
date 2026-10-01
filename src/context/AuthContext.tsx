@@ -171,7 +171,7 @@ export function useAuth(): AuthContextValue {
 export function roleHome(role: Role): string {
   switch (role) {
     case 'seller':
-      return '/seller';
+      return '/seller/dashboard';
     case 'rider':
       return '/rider';
     default:

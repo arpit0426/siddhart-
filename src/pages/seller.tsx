@@ -35,7 +35,7 @@ import {
   SuccessNote,
   TextAreaField,
 } from '../components/ui';
-import { formatDateTime, formatINR, orderStatusMeta, statusMeta, RESERVATION_STATUS, STOCK_REQUEST_STATUS } from '../lib/format';
+import { formatDateTime, formatINR, formatTime, orderStatusMeta, statusMeta, RESERVATION_STATUS, STOCK_REQUEST_STATUS } from '../lib/format';
 import type { Order, Product, Reservation, StockRequest, Store } from '../types';
 
 interface InventoryEvent {
@@ -63,6 +63,8 @@ interface SellerDashboard {
     todayRevenue: number;
     todayOrders: number;
     heldUnits: number;
+    lowStockCount?: number;
+    liveProducts?: number;
   } | null;
   actionRequired: {
     newOrders: number;
@@ -73,162 +75,364 @@ interface SellerDashboard {
     inProgress: number;
   } | null;
   recentOrders: Order[];
+  liveOrders?: Order[];
   lowStock: { id: string; name: string; stock_quantity: number; reserved_quantity: number }[];
 }
 
+function notifyStoreChanged() {
+  window.dispatchEvent(new CustomEvent('nearbuy:store-changed'));
+}
+
+export function shortName(name: string | null | undefined): string {
+  const parts = (name ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'Customer';
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.`;
+}
+
+export function clock12(value: string | null | undefined): string {
+  const match = /^(\d{1,2}):(\d{2})/.exec(value ?? '');
+  if (!match) return value ?? '';
+  const hours = Number(match[1]);
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  return `${hours % 12 || 12}:${match[2]} ${suffix}`;
+}
+
+function greeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+const BOARD_COLUMNS: { status: string; title: string; hint: string }[] = [
+  { status: 'placed', title: 'New', hint: 'Awaiting acceptance' },
+  { status: 'accepted', title: 'Accepted', hint: 'Accepted by you' },
+  { status: 'preparing', title: 'Preparing', hint: 'Being prepared' },
+  { status: 'packed', title: 'Packed', hint: 'Packed, not yet ready' },
+  { status: 'ready_for_pickup', title: 'Ready for Pickup', hint: 'Waiting for rider' },
+];
+
+const AttentionCard: React.FC<{
+  title: string;
+  count: number;
+  noun: string;
+  cta: string;
+  to: string;
+  tone: 'amber' | 'blue' | 'violet' | 'orange';
+}> = ({ title, count, noun, cta, to, tone }) => {
+  const accent = {
+    amber: 'border-l-amber-500',
+    blue: 'border-l-[#1769E0]',
+    violet: 'border-l-violet-500',
+    orange: 'border-l-orange-500',
+  }[tone];
+  return (
+    <Card className={`flex flex-col justify-between border-l-4 p-4 ${count > 0 ? accent : 'border-l-slate-200'}`}>
+      <div>
+        <p className="text-sm font-semibold text-[#172033]">{title}</p>
+        <p className={`mt-1 text-sm ${count > 0 ? 'font-semibold text-[#172033]' : 'text-[#667085]'}`}>
+          {count > 0 ? `${count} ${noun}` : 'All clear'}
+        </p>
+      </div>
+      <Link
+        to={to}
+        className={`mt-3 inline-flex w-fit items-center rounded-lg px-3 py-1.5 text-xs font-semibold ${
+          count > 0 ? 'bg-[#1769E0] text-white hover:bg-[#0B3B91]' : 'border border-slate-200 text-[#172033] hover:bg-slate-50'
+        }`}
+      >
+        {cta}
+      </Link>
+    </Card>
+  );
+};
+
+const BoardOrderCard: React.FC<{ order: Order }> = ({ order }) => {
+  const meta = orderStatusMeta(order.status);
+  const count = order.items.reduce((sum, item) => sum + (item.quantity ?? 1), 0);
+  return (
+    <li className="rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-bold text-[#172033]">{order.orderNumber}</span>
+        <span className="text-[#667085]">{formatTime(order.createdAt)}</span>
+      </div>
+      <p className="mt-1 text-[#667085]">
+        {shortName(order.customer?.name)} · {count} item{count === 1 ? '' : 's'}
+      </p>
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        <span className="font-semibold tabular-nums text-[#172033]">{formatINR(order.total)}</span>
+        <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-[#667085]">
+          {order.fulfillmentType === 'pickup' ? 'Pickup' : 'Delivery'}
+        </span>
+      </div>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <Badge tone={meta.tone}>{meta.label}</Badge>
+        <Link to={`/seller/orders/${order.id}`} className="font-semibold text-[#1769E0] hover:underline">
+          Open Order
+        </Link>
+      </div>
+    </li>
+  );
+};
+
 export const SellerDashboardPage: React.FC = () => {
+  const { user } = useAuth();
   const resource = useApiResource(() => api.get<SellerDashboard>('/api/seller/dashboard'), [], { pollMs: 20000 });
 
-  if (resource.loading && !resource.data) return <Spinner label="Loading your store dashboard…" />;
-  if (resource.error) return <ErrorNote>{resource.error}</ErrorNote>;
+  if (resource.loading && !resource.data) {
+    return (
+      <div className="space-y-6" role="status" aria-label="Loading your store dashboard">
+        <Skeleton className="h-16" />
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-24" />
+          ))}
+        </div>
+        <Skeleton className="h-32" />
+        <Skeleton className="h-64" />
+      </div>
+    );
+  }
+  if (resource.error && !resource.data) {
+    return (
+      <div className="space-y-3">
+        <ErrorNote>We couldn&apos;t load your dashboard. {resource.error}</ErrorNote>
+        <Button variant="secondary" onClick={resource.reload}>
+          Try Again
+        </Button>
+      </div>
+    );
+  }
   if (!resource.data) return null;
 
-  const { store, metrics, actionRequired, recentOrders, lowStock } = resource.data;
+  const { store, metrics, actionRequired, lowStock } = resource.data;
+  const liveOrders = resource.data.liveOrders ?? [];
 
   if (!store) {
     return (
-      <EmptyState
-        icon={<StoreIcon className="h-8 w-8" aria-hidden="true" />}
-        title="Set up your store"
-        description="Create your store profile first — customers can only discover you once it is published."
-        action={<Button onClick={() => navigate('/seller/store')}>Create store profile</Button>}
-      />
+      <div className="space-y-4">
+        <h1 className="text-2xl font-bold text-[#172033] lg:text-[32px]">
+          {greeting()}, {user?.name.split(' ')[0]} 👋
+        </h1>
+        <EmptyState
+          icon={<StoreIcon className="h-8 w-8" aria-hidden="true" />}
+          title="Set up your store"
+          description="Create your store profile first — customers can only discover you once it is published."
+          action={<Button onClick={() => navigate('/seller/store')}>Create store profile</Button>}
+        />
+      </div>
     );
   }
 
+  const isOpen = store.status === 'open';
+  const statusLabel = store.status === 'inactive' ? 'Unpublished' : isOpen ? 'Open' : store.closure_type === 'temporarily_unavailable' ? 'Temporarily unavailable' : 'Closed';
+  const hours = store.opens_at && store.closes_at ? `${clock12(store.opens_at)} – ${clock12(store.closes_at)}` : store.opening_hours ?? '';
+
+  const pending = (actionRequired?.newOrders ?? 0) + (actionRequired?.inProgress ?? 0) + (actionRequired?.packedAwaitingPickup ?? 0);
+  const lowStockCount = metrics?.lowStockCount ?? lowStock.length;
+
+  const checklist = [
+    { label: 'Profile', done: Boolean(user?.name && user?.email) },
+    { label: 'Store details', done: Boolean(store.name && store.address && store.category) },
+    { label: 'Location', done: store.latitude != null && store.longitude != null },
+    { label: 'Hours', done: Boolean(store.opens_at && store.closes_at) },
+    { label: 'First product', done: (metrics?.liveProducts ?? 0) > 0 },
+    { label: 'Store image', done: Boolean(store.image) },
+  ];
+  const doneCount = checklist.filter((item) => item.done).length;
+  const percent = Math.round((doneCount / checklist.length) * 100);
+
   return (
     <div className="space-y-6">
-      <SectionHeader
-        as="h1"
-        title={store.name}
-        subtitle={`${store.city} · ${store.status === 'open' ? 'Open for orders' : 'Not accepting orders'}`}
-        action={
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => navigate('/seller/orders')}>
-              Open order queue
-            </Button>
-            <Button onClick={() => navigate('/seller/products/new')}>
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              Add product
-            </Button>
+      {resource.error && (
+        <ErrorNote>
+          We couldn&apos;t refresh your dashboard just now. Showing the last loaded data.{' '}
+          <button type="button" className="font-semibold underline" onClick={resource.reload}>
+            Try Again
+          </button>
+        </ErrorNote>
+      )}
+
+      <header>
+        <h1 className="text-2xl font-bold tracking-tight text-[#172033] lg:text-[32px] lg:leading-10">
+          {greeting()}, {user?.name.split(' ')[0]} 👋
+        </h1>
+        <p className="mt-1 text-base font-semibold text-[#172033]">{store.name}</p>
+        <p className="text-sm text-[#667085]">
+          <span aria-hidden="true">{isOpen ? '🟢 ' : '🔴 '}</span>
+          {statusLabel}
+          {hours ? ` • ${hours}` : ''}
+        </p>
+      </header>
+
+      <section aria-label="Today at a glance" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard label="Today's Orders" value={metrics?.todayOrders ?? 0} hint="Placed today" />
+        <StatCard label="Today's Sales" value={formatINR(metrics?.todayRevenue ?? 0)} hint="Item value, excl. cancelled" />
+        <StatCard
+          label="Pending Orders"
+          value={pending}
+          hint="Not yet ready for pickup"
+          icon={<Clock className="h-4 w-4 text-amber-600" aria-hidden="true" />}
+        />
+        <StatCard
+          label="Low Stock"
+          value={lowStockCount}
+          hint="Products at or below threshold"
+          icon={<AlertTriangle className="h-4 w-4 text-amber-600" aria-hidden="true" />}
+        />
+      </section>
+
+      <section aria-labelledby="needs-attention" className="space-y-3">
+        <h2 id="needs-attention" className="text-lg font-bold text-[#172033] lg:text-[22px]">
+          Needs Your Attention
+        </h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <AttentionCard
+            title="New Orders"
+            count={actionRequired?.newOrders ?? 0}
+            noun={`order${(actionRequired?.newOrders ?? 0) === 1 ? '' : 's'} waiting`}
+            cta="View Orders"
+            to="/seller/orders?status=placed"
+            tone="amber"
+          />
+          <AttentionCard
+            title="Stock Requests"
+            count={actionRequired?.pendingStockRequests ?? 0}
+            noun={`request${(actionRequired?.pendingStockRequests ?? 0) === 1 ? '' : 's'}`}
+            cta="Respond"
+            to="/seller/stock-requests"
+            tone="blue"
+          />
+          <AttentionCard
+            title="Reservations"
+            count={actionRequired?.pendingReservations ?? 0}
+            noun="pending"
+            cta="Review"
+            to="/seller/reservations"
+            tone="violet"
+          />
+          <AttentionCard
+            title="Low Stock"
+            count={lowStockCount}
+            noun={`product${lowStockCount === 1 ? '' : 's'}`}
+            cta="Manage Inventory"
+            to="/seller/inventory"
+            tone="orange"
+          />
+        </div>
+      </section>
+
+      <section aria-labelledby="live-orders" className="space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 id="live-orders" className="text-lg font-bold text-[#172033] lg:text-[22px]">
+            Live Orders
+          </h2>
+          <Link to="/seller/orders" className="text-sm font-semibold text-[#1769E0] hover:underline">
+            All orders
+          </Link>
+        </div>
+        {liveOrders.length === 0 ? (
+          <EmptyState
+            icon={<Package className="h-8 w-8" aria-hidden="true" />}
+            title="No orders yet"
+            description="New customer orders will appear here."
+          />
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            {BOARD_COLUMNS.map((column) => {
+              const orders = liveOrders.filter((order) => order.status === column.status);
+              return (
+                <div key={column.status} className="rounded-2xl border border-slate-200 bg-[#F1F5FA] p-2.5">
+                  <div className="mb-2 flex items-center justify-between px-1">
+                    <h3 className="text-sm font-bold text-[#172033]" title={column.hint}>
+                      {column.title}
+                    </h3>
+                    <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-[#667085]">
+                      {orders.length}
+                    </span>
+                  </div>
+                  {orders.length === 0 ? (
+                    <p className="px-1 py-3 text-xs text-[#667085]">Nothing here</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {orders.slice(0, 4).map((order) => (
+                        <BoardOrderCard key={order.id} order={order} />
+                      ))}
+                    </ul>
+                  )}
+                  {orders.length > 4 && (
+                    <Link
+                      to={`/seller/orders?status=${column.status}`}
+                      className="mt-2 block px-1 text-xs font-semibold text-[#1769E0] hover:underline"
+                    >
+                      +{orders.length - 4} more
+                    </Link>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        }
-      />
-
-      <section aria-labelledby="action-required" className="space-y-3">
-        <h2 id="action-required" className="text-sm font-bold text-slate-900">
-          Action required
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            label="New orders"
-            value={actionRequired?.newOrders ?? 0}
-            hint="Waiting for you to accept"
-            icon={<Package className="h-4 w-4 text-amber-600" aria-hidden="true" />}
-          />
-          <StatCard
-            label="Stock checks"
-            value={actionRequired?.pendingStockRequests ?? 0}
-            hint="Customer questions to answer"
-          />
-          <StatCard
-            label="Reservations"
-            value={actionRequired?.pendingReservations ?? 0}
-            hint="Confirm to hold stock"
-          />
-          <StatCard
-            label="Ready for pickup"
-            value={actionRequired?.readyForPickup ?? 0}
-            hint="Waiting for a rider"
-            icon={<Truck className="h-4 w-4 text-indigo-600" aria-hidden="true" />}
-          />
-        </div>
+        )}
       </section>
 
-      <section aria-labelledby="operations" className="space-y-3">
-        <h2 id="operations" className="text-sm font-bold text-slate-900">
-          Current operations
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard label="In progress" value={actionRequired?.inProgress ?? 0} hint="Accepted / preparing" />
-          <StatCard label="Packed, awaiting pickup" value={actionRequired?.packedAwaitingPickup ?? 0} hint="Mark ready when a rider can collect" />
-          <StatCard label="Units held for reservations" value={metrics?.heldUnits ?? 0} hint="Reserved in your inventory" />
-          <StatCard
-            label="Low stock items"
-            value={lowStock.length}
-            hint="At or below your threshold"
-            icon={<AlertTriangle className="h-4 w-4 text-amber-600" aria-hidden="true" />}
-          />
-        </div>
-      </section>
-
-      <section aria-labelledby="business" className="space-y-3">
-        <h2 id="business" className="text-sm font-bold text-slate-900">
-          Business (all-time, from real orders)
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard label="Orders" value={metrics?.totalOrders ?? 0} hint={`${metrics?.delivered ?? 0} delivered`} />
-          <StatCard label="Item revenue" value={formatINR(metrics?.subtotalRevenue ?? 0)} hint="Excludes delivery fees" />
-          <StatCard label="Order value (incl. delivery)" value={formatINR(metrics?.revenue ?? 0)} />
-          <StatCard label="Today" value={formatINR(metrics?.todayRevenue ?? 0)} hint={`${metrics?.todayOrders ?? 0} order(s)`} />
-        </div>
-      </section>
-
-      <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid gap-6 lg:grid-cols-2">
         <Card className="p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-slate-900">Latest orders</h2>
-            <Link to="/seller/orders" className="text-xs font-semibold text-blue-700 hover:underline">
-              View all
-            </Link>
-          </div>
-          {recentOrders.length === 0 ? (
-            <p className="mt-3 text-xs text-slate-500">No orders yet. New orders appear here instantly.</p>
-          ) : (
-            <ul className="mt-3 divide-y divide-slate-100">
-              {recentOrders.map((order) => {
-                const meta = orderStatusMeta(order.status);
-                return (
-                  <li key={order.id} className="flex items-center justify-between gap-3 py-3 text-xs">
-                    <div>
-                      <Link to={`/seller/orders/${order.id}`} className="font-semibold text-slate-900 hover:text-blue-700">
-                        {order.orderNumber}
-                      </Link>
-                      <p className="text-slate-500">
-                        {order.customer?.name} · {order.items.length} item(s) · {formatDateTime(order.createdAt)}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <Badge tone={meta.tone}>{meta.label}</Badge>
-                      <p className="mt-1 font-semibold tabular-nums text-slate-900">{formatINR(order.total)}</p>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Card>
-
-        <Card className="p-5">
-          <h2 className="text-sm font-bold text-slate-900">Low stock</h2>
+          <h2 className="text-base font-bold text-[#172033]">Low Stock Alerts</h2>
           {lowStock.length === 0 ? (
-            <p className="mt-3 text-xs text-slate-500">All products are comfortably in stock.</p>
+            <p className="mt-3 text-sm text-[#667085]">All products are comfortably in stock.</p>
           ) : (
             <ul className="mt-3 space-y-2">
-              {lowStock.map((item) => (
-                <li key={item.id} className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
-                  <span className="font-medium text-amber-900">{item.name}</span>
-                  <span className="tabular-nums text-amber-900">
-                    {item.stock_quantity} on shelf{item.reserved_quantity > 0 ? ` · ${item.reserved_quantity} held` : ''}
+              {lowStock.slice(0, 5).map((item) => (
+                <li
+                  key={item.id}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm"
+                >
+                  <span className="text-amber-950">
+                    {item.name} has only {item.stock_quantity} unit{item.stock_quantity === 1 ? '' : 's'} remaining.
                   </span>
+                  <Link to="/seller/inventory" className="shrink-0 text-xs font-semibold text-[#1769E0] hover:underline">
+                    Update Stock
+                  </Link>
                 </li>
               ))}
             </ul>
           )}
-          <Button variant="secondary" size="sm" className="mt-3" onClick={() => navigate('/seller/inventory')}>
-            Manage inventory
-          </Button>
         </Card>
+
+        {percent < 100 && (
+          <Card className="p-5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-[#172033]">Store Setup</h2>
+              <span className="text-sm font-semibold text-[#1769E0]">{percent}% complete</span>
+            </div>
+            <div
+              className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"
+              role="progressbar"
+              aria-valuenow={percent}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Store setup progress"
+            >
+              <div className="h-full rounded-full bg-[#1769E0]" style={{ width: `${percent}%` }} />
+            </div>
+            <ul className="mt-3 grid grid-cols-2 gap-1.5 text-sm">
+              {checklist.map((item) => (
+                <li key={item.label} className={item.done ? 'text-emerald-700' : 'text-[#667085]'}>
+                  <span aria-hidden="true">{item.done ? '✓' : '○'}</span> {item.label}
+                  <span className="sr-only">{item.done ? ' (done)' : ' (to do)'}</span>
+                </li>
+              ))}
+            </ul>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="mt-3"
+              onClick={() => navigate(checklist.find((c) => !c.done)?.label === 'First product' ? '/seller/products/new' : '/seller/store')}
+            >
+              Finish Setup
+            </Button>
+          </Card>
+        )}
       </div>
     </div>
   );
@@ -248,54 +452,124 @@ const SELLER_ACTIONS: Record<string, { next: string; label: string }[]> = {
   packed: [{ next: 'ready_for_pickup', label: 'Ready for pickup' }],
 };
 
+const ORDER_TABS: { id: string; label: string; statuses: string }[] = [
+  { id: 'all', label: 'All', statuses: '' },
+  { id: 'new', label: 'New', statuses: 'placed' },
+  { id: 'preparing', label: 'Preparing', statuses: 'accepted,preparing,packed' },
+  { id: 'ready', label: 'Ready', statuses: 'ready_for_pickup' },
+  { id: 'completed', label: 'Completed', statuses: 'picked_up,out_for_delivery,delivered' },
+  { id: 'cancelled', label: 'Cancelled', statuses: 'cancelled,rejected' },
+];
+
+const STATUS_PARAM_TO_TAB: Record<string, string> = {
+  placed: 'new',
+  accepted: 'preparing',
+  preparing: 'preparing',
+  packed: 'preparing',
+  ready_for_pickup: 'ready',
+  out_for_delivery: 'completed',
+  delivered: 'completed',
+  cancelled: 'cancelled',
+  rejected: 'cancelled',
+};
+
 export const SellerOrdersPage: React.FC = () => {
   const params = useQueryParams();
-  const [status, setStatus] = useState(params.get('status') ?? '');
+  const initial = params.get('tab') ?? STATUS_PARAM_TO_TAB[params.get('status') ?? ''] ?? 'all';
+  const [tab, setTab] = useState(ORDER_TABS.some((t) => t.id === initial) ? initial : 'all');
+  const [search, setSearch] = useState('');
+  const [query, setQuery] = useState('');
+  const [fulfilment, setFulfilment] = useState('');
+
+  // Debounce the order-ID search so we don't hit the API on every keystroke.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(search.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  const statuses = ORDER_TABS.find((t) => t.id === tab)?.statuses ?? '';
   const resource = useApiResource(
-    () => api.get<{ orders: Order[] }>(`/api/seller/orders${status ? `?status=${encodeURIComponent(status)}` : ''}`),
-    [status],
+    () => {
+      const qs = new URLSearchParams();
+      if (statuses) qs.set('status', statuses);
+      if (query) qs.set('q', query.replace(/^#/, ''));
+      const text = qs.toString();
+      return api.get<{ orders: Order[] }>(`/api/seller/orders${text ? `?${text}` : ''}`);
+    },
+    [statuses, query],
     { pollMs: 15000 }
   );
 
+  const orders = (resource.data?.orders ?? []).filter((order) => !fulfilment || order.fulfillmentType === fulfilment);
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <SectionHeader
         as="h1"
         title="Orders"
         subtitle="Accept, prepare, pack and hand over. Every transition is validated by the server."
-        action={
-          <SelectField
-            label="Filter by status"
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-            options={[
-              { value: '', label: 'All orders' },
-              { value: 'placed', label: 'New (placed)' },
-              { value: 'accepted', label: 'Accepted' },
-              { value: 'preparing', label: 'Preparing' },
-              { value: 'packed', label: 'Packed' },
-              { value: 'ready_for_pickup', label: 'Ready for pickup' },
-              { value: 'out_for_delivery', label: 'Out for delivery' },
-              { value: 'delivered', label: 'Delivered' },
-              { value: 'cancelled', label: 'Cancelled / rejected' },
-            ]}
-          />
-        }
       />
 
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div role="tablist" aria-label="Order status" className="flex max-w-full gap-1.5 overflow-x-auto pb-1">
+          {ORDER_TABS.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              type="button"
+              aria-selected={tab === t.id}
+              onClick={() => setTab(t.id)}
+              className={`shrink-0 rounded-full border px-3.5 py-1.5 text-sm font-semibold ${
+                tab === t.id ? 'border-[#1769E0] bg-[#EAF3FF] text-[#0B3B91]' : 'border-slate-200 bg-white text-[#667085] hover:bg-slate-50'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+          <Field
+            label="Search order ID"
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="#NB-10482"
+            className="sm:w-48"
+          />
+          <SelectField
+            label="Fulfilment"
+            value={fulfilment}
+            onChange={(event) => setFulfilment(event.target.value)}
+            options={[
+              { value: '', label: 'All types' },
+              { value: 'delivery', label: 'Delivery' },
+              { value: 'pickup', label: 'Pickup' },
+            ]}
+          />
+        </div>
+      </div>
+
       {resource.loading && !resource.data ? (
-        <Skeleton className="h-40" />
-      ) : resource.error ? (
-        <ErrorNote>{resource.error}</ErrorNote>
-      ) : (resource.data?.orders ?? []).length === 0 ? (
+        <div className="space-y-3" role="status" aria-label="Loading orders">
+          <Skeleton className="h-32" />
+          <Skeleton className="h-32" />
+        </div>
+      ) : resource.error && !resource.data ? (
+        <div className="space-y-3">
+          <ErrorNote>We couldn&apos;t load your orders. {resource.error}</ErrorNote>
+          <Button variant="secondary" onClick={resource.reload}>
+            Try Again
+          </Button>
+        </div>
+      ) : orders.length === 0 ? (
         <EmptyState
           icon={<Package className="h-8 w-8" aria-hidden="true" />}
-          title="No orders in this view"
-          description="Orders placed by customers appear here in real time."
+          title={query || fulfilment || tab !== 'all' ? 'No matching orders' : 'No orders yet'}
+          description={query || fulfilment || tab !== 'all' ? 'Try another tab or clear the filters.' : 'New customer orders will appear here.'}
         />
       ) : (
         <div className="space-y-3">
-          {(resource.data?.orders ?? []).map((order) => (
+          {orders.map((order) => (
             <SellerOrderRow key={order.id} order={order} onChanged={resource.reload} />
           ))}
         </div>
@@ -1233,7 +1507,7 @@ export const SellerInventoryPage: React.FC = () => {
 /* Requests (stock checks + reservations)                                     */
 /* -------------------------------------------------------------------------- */
 
-export const SellerRequestsPage: React.FC = () => {
+export const SellerRequestsPage: React.FC<{ view?: 'all' | 'stock' | 'reservations' }> = ({ view = 'all' }) => {
   const stockResource = useApiResource(() => api.get<{ requests: StockRequest[] }>('/api/seller/stock-requests'), [], {
     pollMs: 20000,
   });
@@ -1285,10 +1559,17 @@ export const SellerRequestsPage: React.FC = () => {
     <div className="space-y-8">
       <SectionHeader
         as="h1"
-        title="Customer requests"
-        subtitle="Answer stock checks and reserve stock for customers who asked first."
+        title={view === 'stock' ? 'Stock requests' : view === 'reservations' ? 'Reservations' : 'Customer requests'}
+        subtitle={
+          view === 'stock'
+            ? 'Customers asking whether an item is available. Confirming availability does not hold stock.'
+            : view === 'reservations'
+              ? 'Confirming a reservation holds stock for the customer until it expires or is fulfilled.'
+              : 'Answer stock checks and reserve stock for customers who asked first.'
+        }
       />
 
+      {view !== 'stock' && (
       <section aria-labelledby="seller-reservations" className="space-y-3">
         <h2 id="seller-reservations" className="text-sm font-bold text-slate-900">
           Reservations
@@ -1378,6 +1659,9 @@ export const SellerRequestsPage: React.FC = () => {
         )}
       </section>
 
+      )}
+
+      {view !== 'reservations' && (
       <section aria-labelledby="seller-stock-requests" className="space-y-3">
         <h2 id="seller-stock-requests" className="text-sm font-bold text-slate-900">
           Stock checks
@@ -1436,6 +1720,7 @@ export const SellerRequestsPage: React.FC = () => {
           </div>
         )}
       </section>
+      )}
 
       <Modal
         open={respondModal !== null}
@@ -1704,6 +1989,7 @@ export const SellerStorePage: React.FC = () => {
       });
       toast.push({ title: 'Store saved', tone: 'success' });
       storeResource.reload();
+      notifyStoreChanged();
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -1716,6 +2002,7 @@ export const SellerStorePage: React.FC = () => {
       await api.post(publish ? '/api/seller/store/publish' : '/api/seller/store/unpublish');
       toast.push({ title: publish ? 'Store published' : 'Store hidden from discovery', tone: 'success' });
       storeResource.reload();
+      notifyStoreChanged();
     } catch (error) {
       toast.push({ title: 'Could not update store', description: errorMessage(error), tone: 'error' });
     }
@@ -1744,7 +2031,7 @@ export const SellerStorePage: React.FC = () => {
         <InfoNote>Your store is currently hidden. Customers cannot find or order from it.</InfoNote>
       )}
 
-      {store && store.status !== 'inactive' && <StoreStatusCard store={store} onChanged={() => storeResource.reload()} />}
+      {store && store.status !== 'inactive' && <StoreStatusCard store={store} onChanged={() => { storeResource.reload(); notifyStoreChanged(); }} />}
       {store && <StoreFulfilmentCard store={store} onChanged={() => storeResource.reload()} />}
 
       <Card className="p-6">

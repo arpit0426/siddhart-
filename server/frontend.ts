@@ -29,7 +29,7 @@ type Role = 'customer' | 'seller' | 'rider';
 
 const ROLE_HOME: Record<Role, string> = {
   customer: '/customer',
-  seller: '/seller',
+  seller: '/seller/dashboard',
   rider: '/rider',
 };
 
@@ -62,6 +62,12 @@ export function pageRoutingGuard(req: Request, res: Response, next: NextFunction
   const pathOnly = (req.path || '/').split('?')[0].replace(/\/+$/, '') || '/';
   if (pathOnly.startsWith('/api') || pathOnly.startsWith('/uploads') || pathOnly.includes('.')) {
     next();
+    return;
+  }
+
+  // The bare seller workspace URL is an alias of the dashboard.
+  if (pathOnly === '/seller') {
+    redirect(res, '/seller/dashboard');
     return;
   }
 

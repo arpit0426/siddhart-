@@ -87,7 +87,8 @@ if (!hasBuild) {
       ['/customer/orders', '/customer/auth?next=%2Fcustomer%2Forders'],
       ['/requests', '/customer/auth?next=%2Frequests'],
       ['/account', '/customer/auth?next=%2Faccount'],
-      ['/seller', '/seller/auth?next=%2Fseller'],
+      ['/seller', '/seller/dashboard'],
+      ['/seller/dashboard', '/seller/auth?next=%2Fseller%2Fdashboard'],
       ['/seller/orders', '/seller/auth?next=%2Fseller%2Forders'],
       ['/seller/orders/ord_example123', '/seller/auth?next=%2Fseller%2Forders%2Ford_example123'],
       ['/seller/products', '/seller/auth?next=%2Fseller%2Fproducts'],
@@ -136,11 +137,11 @@ if (!hasBuild) {
     });
 
     const redirectChecks: [string, string][] = [
-      ['/', '/seller'],
-      ['/customer', '/seller'],
-      ['/customer/auth', '/seller'],
-      ['/rider/jobs', '/seller'],
-      ['/customer/recover', '/seller'],
+      ['/', '/seller/dashboard'],
+      ['/customer', '/seller/dashboard'],
+      ['/customer/auth', '/seller/dashboard'],
+      ['/rider/jobs', '/seller/dashboard'],
+      ['/customer/recover', '/seller/dashboard'],
     ];
     for (const [link, location] of redirectChecks) {
       const response = await fetch(`${base}${link}`, {
