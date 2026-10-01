@@ -288,7 +288,21 @@ export function purgeExpiredResetTokens(): void {
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
 
+/** Seeded demo identities. Their password is public, so lockout only blocks the demo. */
+const DEMO_ACCOUNT_EMAILS = new Set([
+  'customer.demo@nearbuy.app',
+  'seller.demo@nearbuy.app',
+  'rider.demo@nearbuy.app',
+]);
+
+export function isPublicDemoAccount(user: { email?: string | null } | null | undefined): boolean {
+  const email = user?.email?.trim().toLowerCase();
+  return Boolean(config.demoMode && email && DEMO_ACCOUNT_EMAILS.has(email));
+}
+
 export function assertAccountNotLocked(user: any): void {
+  // A wrong guess must not lock the published demo accounts out of the demo.
+  if (isPublicDemoAccount(user)) return;
   if (user?.locked_until && new Date(user.locked_until) > new Date()) {
     const minutes = Math.ceil((new Date(user.locked_until).getTime() - Date.now()) / 60000);
     throw new ApiError(

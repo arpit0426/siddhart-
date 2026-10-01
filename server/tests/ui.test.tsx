@@ -13,6 +13,13 @@ const { createSuite, launchServer } = await import('./harness.js');
 const React = (await import('react')).default;
 const { createRoot } = await import('react-dom/client');
 const App = (await import('../../src/App')).default;
+const { setSessionToken } = await import('../../src/lib/api');
+
+/** Cookie plus the tab-scoped bearer fallback. Clearing only the cookie leaves the SPA signed in. */
+function resetBrowserSession() {
+  cookie = '';
+  setSessionToken(null);
+}
 
 const suite = createSuite('UI journey tests');
 const server = await launchServer('ui');
@@ -314,7 +321,7 @@ await suite.test('requests UI: stock check never holds stock, a confirmed reserv
 await suite.test('auth UI: each role signs in with the demo account; wrong passwords are refused', async () => {
   const landing = { customer: /Shop by category/, seller: /Dashboard/, rider: /You are (online|offline)/ } as const;
   for (const role of ['customer', 'seller', 'rider'] as const) {
-    cookie = '';
+    resetBrowserSession();
     const emails = { customer: 'customer.demo@nearbuy.app', seller: 'seller.demo@nearbuy.app', rider: 'rider.demo@nearbuy.app' };
 
     const bad = mount(`/${role}/auth`);
@@ -325,7 +332,7 @@ await suite.test('auth UI: each role signs in with the demo account; wrong passw
     assert.equal(window.location.pathname, `/${role}/auth`);
     bad.unmount();
 
-    cookie = '';
+    resetBrowserSession();
     const good = mount(`/${role}/auth`);
     await good.type(/Email/, emails[role]);
     await good.type(/Password/, 'NearBuy@2026');
@@ -336,7 +343,7 @@ await suite.test('auth UI: each role signs in with the demo account; wrong passw
 });
 
 await suite.test('auth UI: a new customer can sign up and is signed straight in', async () => {
-  cookie = '';
+  resetBrowserSession();
   const email = `ui.${Date.now()}@example.com`;
   const app = mount('/customer/signup');
   await app.type(/Full name/, 'Test Customer');

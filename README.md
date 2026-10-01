@@ -28,7 +28,7 @@ Every catalogue entry, cart, order, stock level, handoff code and status transit
 * **Frontend**: React 19 SPA, Tailwind CSS v4, Lucide icons, history-API router with real deep links, mobile-first layout.
 * **Backend**: Node 22 + Express 4, TypeScript end to end, `tsx server.ts` for dev and production.
 * **Database**: `node:sqlite` `DatabaseSync` in WAL mode with foreign keys, an idempotent migration runner and row-level concurrency control.
-* **Security**: scrypt password hashing with per-user salts, opaque session tokens stored **SHA-256-hashed** and delivered in an **HttpOnly, SameSite=Lax cookie** (no tokens in `localStorage`), server-side role authorization on every protected route, CSRF guards, sliding-window rate limits, structured logs with secret redaction.
+* **Security**: scrypt password hashing with per-user salts, opaque session tokens stored **SHA-256-hashed** and delivered in an **HttpOnly cookie** (SameSite=Lax on local HTTP; SameSite=None; Secure; Partitioned on HTTPS so the session survives the embedded preview). No tokens in `localStorage`. Server-side role authorization on every protected route, CSRF guards, sliding-window rate limits, structured logs with secret redaction.
 * **Handoff verification**:
   * **Seller pickup code (`PK-XXXX`)** — generated with `crypto.randomBytes`, revealed to the seller only once the order reaches `ready_for_pickup`, never shown to the customer.
   * **Customer delivery code (`DL-XXXX`)** — visible only to the ordering customer, never to the seller or to unrelated riders.

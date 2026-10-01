@@ -14,6 +14,7 @@ import {
   statusLabel,
 } from '../orderStateMachine.js';
 import { rateLimit, resetRateLimits } from '../rateLimit.js';
+import { originGuard, setSessionCookie } from '../security.js';
 
 const suite = createSuite('Unit tests');
 
@@ -110,6 +111,96 @@ await suite.test('rate limiter blocks once the window budget is exhausted', asyn
   assert.equal(res.statusCode, 429);
   assert.match(String(res.body.error), /Too many requests/);
   resetRateLimits();
+});
+
+function mockRes() {
+  const headers: Record<string, string | string[]> = {};
+  return {
+    statusCode: 200,
+    headers,
+    body: undefined as unknown,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body: unknown) {
+      this.body = body;
+      return this;
+    },
+    append(name: string, value: string) {
+      const key = name.toLowerCase();
+      const current = headers[key];
+      headers[key] = current ? ([] as string[]).concat(current, value) : value;
+    },
+  };
+}
+
+await suite.test('preview sign-in is allowed and the session cookie survives an embedded iframe', async () => {
+  let nextCalls = 0;
+  const previewReq = {
+    method: 'POST',
+    path: '/api/auth/login',
+    secure: false,
+    headers: {
+      host: '127.0.0.1:3000',
+      origin: 'https://3000-sandbox.e2b.app',
+      'x-forwarded-proto': 'https',
+    },
+  } as any;
+  const blocked = mockRes();
+  originGuard(previewReq, blocked as any, () => {
+    nextCalls += 1;
+  });
+  assert.equal(nextCalls, 1, 'the embedded preview origin must be able to sign in');
+  assert.notEqual(blocked.statusCode, 403);
+
+  const cookieRes = mockRes();
+  setSessionCookie(cookieRes as any, 'session-token', new Date(Date.now() + 60_000), previewReq);
+  const setCookie = String(cookieRes.headers['set-cookie']);
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /Secure/);
+  assert.match(setCookie, /SameSite=None/);
+  assert.match(setCookie, /Partitioned/);
+
+  const localRes = mockRes();
+  setSessionCookie(
+    localRes as any,
+    'session-token',
+    new Date(Date.now() + 60_000),
+    { method: 'POST', secure: false, headers: { host: 'localhost:3000', origin: 'http://localhost:3000' } } as any
+  );
+  assert.match(String(localRes.headers['set-cookie']), /SameSite=Lax/);
+  assert.doesNotMatch(String(localRes.headers['set-cookie']), /Partitioned/);
+
+  let evilCalls = 0;
+  const evil = mockRes();
+  originGuard(
+    { method: 'POST', path: '/api/auth/login', headers: { host: 'localhost:3000', origin: 'https://evil.example' } } as any,
+    evil as any,
+    () => {
+      evilCalls += 1;
+    }
+  );
+  assert.equal(evilCalls, 0);
+  assert.equal(evil.statusCode, 403);
+
+  let sameOriginCalls = 0;
+  originGuard(
+    {
+      method: 'POST',
+      path: '/api/auth/login',
+      headers: {
+        host: 'internal:3000',
+        origin: 'https://app.example.com',
+        'sec-fetch-site': 'same-origin',
+      },
+    } as any,
+    mockRes() as any,
+    () => {
+      sameOriginCalls += 1;
+    }
+  );
+  assert.equal(sameOriginCalls, 1, 'a same-origin browser fetch must not be blocked by a rewritten Host');
 });
 
 await suite.test('demo accounts are gated: off in production, on only when explicitly enabled', async () => {

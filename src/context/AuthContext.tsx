@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { api, ApiRequestError, SESSION_EXPIRED_EVENT } from '../lib/api';
+import { api, ApiRequestError, SESSION_EXPIRED_EVENT, setSessionToken } from '../lib/api';
 import type { AppConfig, Role, User } from '../types';
 
 /**
@@ -80,6 +80,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const onExpired = () => {
+      setSessionToken(null);
       setUser(null);
       // The role auth screens surface "Your session has expired. Please sign in again."
       try {
@@ -141,6 +142,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (error) {
       if (!(error instanceof ApiRequestError)) throw error;
     } finally {
+      setSessionToken(null);
       setUser(null);
     }
   }, []);
