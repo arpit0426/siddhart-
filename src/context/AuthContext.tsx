@@ -13,7 +13,7 @@ interface AuthContextValue {
   user: User | null;
   config: AppConfig | null;
   loading: boolean;
-  login: (input: { email: string; password: string; role?: Role }) => Promise<User>;
+  login: (input: { email: string; password: string; role?: Role; remember?: boolean }) => Promise<User>;
   register: (input: {
     role: Role;
     name: string;
@@ -93,11 +93,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = useCallback(
-    async ({ email, password, role }: { email: string; password: string; role?: Role }) => {
+    async ({ email, password, role, remember }: { email: string; password: string; role?: Role; remember?: boolean }) => {
       const data = await api.post<{ user: User }>('/api/auth/login', {
         email,
         password,
         expectedRole: role,
+        remember,
       });
       setUser(data.user);
       return data.user;
@@ -136,13 +137,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   const logout = useCallback(async () => {
-    try {
-      await api.post('/api/auth/logout');
-    } catch (error) {
-      if (!(error instanceof ApiRequestError)) throw error;
-    } finally {
-      setUser(null);
-    }
+    await api.post('/api/auth/logout');
+    setUser(null);
   }, []);
 
   const value = useMemo(
@@ -162,7 +158,7 @@ export function useAuth(): AuthContextValue {
 export function roleHome(role: Role): string {
   switch (role) {
     case 'seller':
-      return '/seller';
+      return '/seller/dashboard';
     case 'rider':
       return '/rider';
     default:

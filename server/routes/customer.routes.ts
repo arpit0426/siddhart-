@@ -6,6 +6,7 @@ import { rateLimit } from '../rateLimit.js';
 import { ApiError, route } from '../http.js';
 import { AuthenticatedRequest, requireAuth, requireRole } from '../auth.js';
 import { inventoryMap, restock, tryConsumeStock, fulfilHold, releaseHold } from '../inventory.js';
+import { publicStore, storefrontProducts } from '../storefront.js';
 import { generateHandoffCode, orderNumber, randomId } from '../codes.js';
 import { computeSubtotal, deliveryFeeFor, orderTotal, toRupees } from '../pricing.js';
 import {
@@ -59,7 +60,7 @@ customerRouter.get(
              (SELECT COUNT(*) FROM products p WHERE p.store_id = s.id AND p.is_published = 1) AS product_count
       FROM stores s
       JOIN users u ON s.seller_id = u.id
-      WHERE s.status != 'inactive' AND s.published_at IS NOT NULL`;
+      WHERE s.status != 'inactive' AND s.is_published=1 AND s.published_at IS NOT NULL`;
     const params: any[] = [];
 
     if (query) {
@@ -74,7 +75,7 @@ customerRouter.get(
     sql += ` ORDER BY s.name ASC LIMIT 100`;
 
     const stores = (db.prepare(sql).all(...params) as any[]).map((store) => ({
-      ...store,
+      ...publicStore(store),
       distanceKm:
         Number.isFinite(lat) && Number.isFinite(lng) && store.latitude != null && store.longitude != null
           ? haversineKm(lat as number, lng as number, store.latitude, store.longitude)
@@ -100,7 +101,7 @@ customerRouter.get(
       .prepare(
         `SELECT p.category AS category, COUNT(*) AS count
          FROM products p JOIN stores s ON p.store_id = s.id
-         WHERE p.is_published = 1 AND s.status != 'inactive' AND s.published_at IS NOT NULL
+         WHERE p.is_published = 1 AND s.status != 'inactive' AND s.is_published=1 AND s.published_at IS NOT NULL
          GROUP BY p.category ORDER BY count DESC, p.category ASC`
       )
       .all() as any[];
@@ -116,22 +117,15 @@ customerRouter.get(
       .prepare(
         `SELECT s.*, u.name AS seller_name FROM stores s
          JOIN users u ON s.seller_id = u.id
-         WHERE s.id = ? AND s.status != 'inactive'`
+         WHERE s.id = ? AND s.status != 'inactive' AND s.is_published=1`
       )
       .get(req.params.id) as any;
 
     if (!store) throw ApiError.notFound('Store not found.');
 
-    const products = db
-      .prepare(
-        `SELECT p.*, i.stock_quantity, i.reserved_quantity, (i.stock_quantity - i.reserved_quantity) AS sellable
-         FROM products p JOIN inventory i ON i.product_id = p.id
-         WHERE p.store_id = ? AND p.is_published = 1
-         ORDER BY p.category ASC, p.name ASC`
-      )
-      .all(req.params.id) as any[];
+    const products = storefrontProducts(req.params.id);
 
-    res.json({ store, products });
+    res.json({ store: publicStore(store), products });
   })
 );
 
@@ -148,13 +142,13 @@ customerRouter.get(
     const sort = typeof req.query.sort === 'string' ? req.query.sort : 'name';
 
     let sql = `
-      SELECT p.*, s.name AS store_name, s.status AS store_status, s.city AS store_city,
+      SELECT p.*, s.name AS store_name, CASE WHEN s.temporarily_unavailable=1 THEN 'closed' WHEN s.is_published=0 THEN 'inactive' ELSE s.status END AS store_status, s.city AS store_city,
              s.supports_delivery, s.supports_pickup,
-             i.stock_quantity, i.reserved_quantity, (i.stock_quantity - i.reserved_quantity) AS stock
+             i.stock_quantity, i.reserved_quantity, CASE WHEN p.availability='available' THEN i.stock_quantity - i.reserved_quantity ELSE 0 END AS stock
       FROM products p
       JOIN stores s ON p.store_id = s.id
       JOIN inventory i ON i.product_id = p.id
-      WHERE p.is_published = 1 AND s.status != 'inactive' AND s.published_at IS NOT NULL`;
+      WHERE p.is_published = 1 AND s.status != 'inactive' AND s.is_published=1 AND s.published_at IS NOT NULL`;
     const params: any[] = [];
 
     if (query) {
@@ -201,8 +195,8 @@ customerRouter.get(
     const product = db
       .prepare(
         `SELECT p.*, s.name AS store_name, s.address AS store_address, s.city AS store_city,
-                s.status AS store_status, s.opening_hours, s.supports_delivery, s.supports_pickup,
-                i.stock_quantity, i.reserved_quantity, (i.stock_quantity - i.reserved_quantity) AS stock
+                CASE WHEN s.temporarily_unavailable=1 THEN 'closed' WHEN s.is_published=0 THEN 'inactive' ELSE s.status END AS store_status, s.opening_hours, s.supports_delivery, s.supports_pickup,
+                i.stock_quantity, i.reserved_quantity, CASE WHEN p.availability='available' THEN i.stock_quantity - i.reserved_quantity ELSE 0 END AS stock
          FROM products p
          JOIN stores s ON p.store_id = s.id
          JOIN inventory i ON i.product_id = p.id
@@ -245,10 +239,10 @@ function cartPayload(customerId: string) {
   const items = db
     .prepare(
       `SELECT ci.id, ci.quantity, p.id AS product_id, p.name, p.price, p.category, p.image,
-              p.is_published, p.store_id, s.name AS store_name, s.status AS store_status,
+              p.is_published, p.store_id, s.name AS store_name, CASE WHEN s.temporarily_unavailable=1 THEN 'closed' WHEN s.is_published=0 THEN 'inactive' ELSE s.status END AS store_status,
               s.supports_delivery, s.supports_pickup,
               i.stock_quantity, i.reserved_quantity,
-              (i.stock_quantity - i.reserved_quantity) AS stock
+              CASE WHEN p.availability='available' THEN i.stock_quantity - i.reserved_quantity ELSE 0 END AS stock
        FROM cart_items ci
        JOIN products p ON ci.product_id = p.id
        JOIN stores s ON p.store_id = s.id
@@ -288,7 +282,7 @@ function cartPayload(customerId: string) {
 
 function itemIssue(item: any): string | null {
   if (!item.is_published) return 'This item is no longer available.';
-  if (item.store_status === 'inactive') return 'This store is not accepting orders.';
+  if (item.store_status !== 'open') return 'This store is currently closed for checkout.';
   if (item.stock <= 0) return 'This item is now out of stock. Please update your cart.';
   if (item.quantity > item.stock) {
     return `Only ${item.stock} unit(s) left in stock. Please update the quantity.`;
@@ -319,8 +313,8 @@ customerRouter.post(
 
     const product = db
       .prepare(
-        `SELECT p.id, p.name, p.is_published, s.status AS store_status,
-                i.stock_quantity - i.reserved_quantity AS stock
+        `SELECT p.id, p.name, p.is_published, CASE WHEN s.temporarily_unavailable=1 THEN 'closed' WHEN s.is_published=0 THEN 'inactive' ELSE s.status END AS store_status,
+                CASE WHEN p.availability='available' THEN i.stock_quantity - i.reserved_quantity ELSE 0 END AS stock
          FROM products p
          JOIN stores s ON p.store_id = s.id
          JOIN inventory i ON i.product_id = p.id
@@ -502,7 +496,7 @@ function buildCheckoutPlan(customerId: string, rawItems: unknown, fulfilmentType
 
   const products = db
     .prepare(
-      `SELECT p.*, s.name AS store_name, s.status AS store_status, s.address AS store_address,
+      `SELECT p.*, s.name AS store_name, CASE WHEN s.temporarily_unavailable=1 THEN 'closed' WHEN s.is_published=0 THEN 'inactive' ELSE s.status END AS store_status, s.address AS store_address,
               s.city AS store_city, s.supports_delivery, s.supports_pickup, s.published_at
        FROM products p JOIN stores s ON p.store_id = s.id
        WHERE p.id IN (${lines.map(() => '?').join(',')})`
@@ -521,11 +515,11 @@ function buildCheckoutPlan(customerId: string, rawItems: unknown, fulfilmentType
       issues.push('One of the items in your cart is no longer available.');
       continue;
     }
-    if (!product.is_published) {
+    if (!product.is_published || product.availability !== 'available') {
       issues.push(`${product.name} is no longer available at ${product.store_name}.`);
       continue;
     }
-    if (product.store_status === 'inactive' || !product.published_at) {
+    if (product.store_status !== 'open' || !product.published_at) {
       issues.push(`${product.store_name} is not accepting orders right now.`);
       continue;
     }
@@ -852,7 +846,7 @@ export function hydrateOrder(orderId: string, viewer: 'customer' | 'seller' | 'r
               s.contact_phone AS store_phone, s.opening_hours,
               u.name AS customer_name, u.phone AS customer_phone,
               dj.id AS job_id, dj.status AS job_status, dj.earnings AS job_earnings,
-              dj.claimed_at, dj.picked_up_at, dj.delivered_at,
+              dj.claimed_at, dj.picked_up_at, dj.delivered_at, dj.seller_verified_at, dj.seller_verified_rider_id, dj.rider_id AS assigned_rider_id,
               r.name AS rider_name, r.phone AS rider_phone
        FROM orders o
        JOIN stores s ON o.store_id = s.id
@@ -925,6 +919,7 @@ export function hydrateOrder(orderId: string, viewer: 'customer' | 'seller' | 'r
       pickupCode: pickupCodeRevealedForOrder(order.status) ? order.pickup_code : null,
       rider: order.rider_name ? { name: order.rider_name, phone: order.rider_phone } : null,
       jobStatus: order.job_status,
+      riderVerified: Boolean(order.seller_verified_at && order.seller_verified_rider_id === order.assigned_rider_id),
     };
   }
 
@@ -1027,7 +1022,7 @@ customerRouter.post(
 function productForRequest(productId: string) {
   const product = db
     .prepare(
-      `SELECT p.*, s.status AS store_status, s.published_at,
+      `SELECT p.*, CASE WHEN s.temporarily_unavailable=1 THEN 'closed' WHEN s.is_published=0 THEN 'inactive' ELSE s.status END AS store_status, s.published_at,
               i.stock_quantity, i.reserved_quantity, (i.stock_quantity - i.reserved_quantity) AS sellable
        FROM products p JOIN stores s ON p.store_id = s.id
        JOIN inventory i ON i.product_id = p.id

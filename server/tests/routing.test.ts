@@ -136,11 +136,11 @@ if (!hasBuild) {
     });
 
     const redirectChecks: [string, string][] = [
-      ['/', '/seller'],
-      ['/customer', '/seller'],
-      ['/customer/auth', '/seller'],
-      ['/rider/jobs', '/seller'],
-      ['/customer/recover', '/seller'],
+      ['/', '/seller/dashboard'],
+      ['/customer', '/seller/dashboard'],
+      ['/customer/auth', '/seller/dashboard'],
+      ['/rider/jobs', '/seller/dashboard'],
+      ['/customer/recover', '/seller/dashboard'],
     ];
     for (const [link, location] of redirectChecks) {
       const response = await fetch(`${base}${link}`, {

@@ -14,6 +14,7 @@ export interface User {
   licenseNumber?: string | null;
   onboardingCompleted?: boolean;
   createdAt?: string;
+  profileImage?: string | null;
 }
 
 export interface AppConfig {
@@ -45,6 +46,10 @@ export interface Store {
   contact_phone?: string | null;
   status: 'open' | 'closed' | 'inactive';
   image: string | null;
+  logo?: string | null;
+  contact_email?: string | null;
+  is_published?: number;
+  temporarily_unavailable?: number;
   supports_delivery?: number;
   supports_pickup?: number;
   published_at: string | null;
@@ -69,6 +74,13 @@ export interface Product {
   low_stock_threshold?: number;
   sellable?: number;
   is_published: number;
+  brand?: string | null;
+  unit?: string | null;
+  sku?: string | null;
+  mrp?: number | null;
+  availability?: 'available' | 'unavailable' | 'temporary';
+  additional_images?: string[];
+  inventory_version?: number;
   store_name?: string;
   store_status?: string;
   store_city?: string;
@@ -185,6 +197,7 @@ export interface Order {
   customer?: { name: string; phone: string | null } | null;
   rider?: { name: string; phone: string | null; status?: string } | null;
   jobStatus?: string | null;
+  riderVerified?: boolean;
 }
 
 export interface DeliveryJob {

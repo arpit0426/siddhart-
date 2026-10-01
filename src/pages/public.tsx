@@ -320,7 +320,8 @@ export const ProductCard: React.FC<{
   quantityInCart: number;
   adding?: boolean;
   onAdd: () => void;
-}> = ({ product, quantityInCart, adding, onAdd }) => {
+  preview?: boolean;
+}> = ({ product, quantityInCart, adding, onAdd, preview = false }) => {
   const outOfStock = (product.stock ?? 0) <= 0;
 
   return (
@@ -364,12 +365,12 @@ export const ProductCard: React.FC<{
           </div>
           <Button
             className="mt-3 w-full"
-            disabled={outOfStock}
+            disabled={preview || outOfStock}
             loading={adding}
             onClick={onAdd}
             aria-label={`Add ${product.name} to cart`}
           >
-            {quantityInCart > 0 ? `Add another (${quantityInCart} in cart)` : 'Add to cart'}
+            {preview ? 'Preview only' : quantityInCart > 0 ? `Add another (${quantityInCart} in cart)` : 'Add to cart'}
           </Button>
         </div>
       </div>
@@ -427,14 +428,14 @@ export const StoreCard: React.FC<{ store: Store }> = ({ store }) => (
 /* Store detail                                                               */
 /* -------------------------------------------------------------------------- */
 
-export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
-  const { user } = useAuth();
+export const StoreDetailPage: React.FC<{ storeId: string; preview?: boolean }> = ({ storeId, preview = false }) => {
+  const { user, config } = useAuth();
   const { cart, updateItem } = useCart();
   const toast = useToast();
   const [addingId, setAddingId] = useState<string | null>(null);
   const resource = useApiResource(
-    () => api.get<{ store: Store; products: Product[] }>(`/api/customer/stores/${storeId}`),
-    [storeId]
+    () => api.get<{ store: Store; products: Product[] }>(preview ? '/api/seller/store/preview' : `/api/customer/stores/${storeId}`),
+    [storeId, preview]
   );
 
   const cartQuantities = useMemo(() => {
@@ -450,6 +451,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
   const { store, products } = resource.data;
 
   const add = async (product: Product) => {
+    if (preview) return;
     if (!user) {
       navigate(`/customer/auth?next=${encodeURIComponent(`/stores/${storeId}`)}`);
       return;
@@ -467,7 +469,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
 
   return (
     <div className="space-y-6">
-      <nav aria-label="Breadcrumb" className="text-xs text-slate-500">
+      {!preview && <nav aria-label="Breadcrumb" className="text-xs text-slate-500">
         <Link to="/discover" className="hover:text-slate-800">
           Discover
         </Link>
@@ -477,7 +479,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
         </Link>
         <span className="mx-1.5">/</span>
         <span className="font-medium text-slate-700">{store.name}</span>
-      </nav>
+      </nav>}
 
       <Card className="overflow-hidden">
         <div className="grid gap-4 sm:grid-cols-[220px_1fr]">
@@ -513,7 +515,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
             </dl>
             <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
               {store.supports_delivery ? (
-                <Badge tone="success">Home delivery · ₹30 flat</Badge>
+                <Badge tone="success">Home delivery · {formatINR(config?.deliveryFeePerStore ?? 30)} per order</Badge>
               ) : (
                 <Badge tone="neutral">Pickup only</Badge>
               )}
@@ -536,6 +538,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
               quantityInCart={cartQuantities.get(product.id) ?? 0}
               adding={addingId === product.id}
               onAdd={() => add(product)}
+              preview={preview}
             />
           ))}
         </div>

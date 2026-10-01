@@ -35,6 +35,7 @@ import {
 import { randomId } from '../codes.js';
 
 export const authRouter = Router();
+authRouter.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 
 const ROLES = ['customer', 'seller', 'rider'] as const;
 
@@ -178,8 +179,8 @@ authRouter.post(
         db.prepare(
           `INSERT INTO stores (id, seller_id, name, description, category, address, city, state, pincode,
              opening_hours, opens_at, closes_at, operating_days, status, supports_delivery, supports_pickup,
-             published_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, 1, ?, ?, ?)`
+             published_at, is_published, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'inactive', 1, 1, NULL, 0, ?, ?)`
         ).run(
           randomId('store'),
           id,
@@ -194,7 +195,6 @@ authRouter.post(
           store.opensAt,
           store.closesAt,
           store.operatingDays,
-          now,
           now,
           now
         );
@@ -235,7 +235,7 @@ authRouter.post(
     const user = findUserByIdentifier(identifier);
 
     // Generic error message: never reveal whether an email/phone is registered.
-    if (!user) {
+    if (!user || (!config.demoMode && user.email.endsWith('.demo@nearbuy.app'))) {
       logger.warn('auth.login_failed', { identifier, reason: 'unknown_account' });
       throw new ApiError(401, 'Invalid email or password. Please try again.', 'invalid_credentials');
     }
@@ -259,8 +259,9 @@ authRouter.post(
     }
 
     registerSuccessfulLogin(user.id);
-    const session = createSession(user.id, user.role, { userAgent: req.headers['user-agent'] });
-    setSessionCookie(res, session.token, session.expiresAt);
+    const remember = req.body?.remember !== false;
+    const session = createSession(user.id, user.role, { userAgent: req.headers['user-agent'], remember });
+    setSessionCookie(res, session.token, session.expiresAt, remember);
     logger.info('auth.login', { userId: user.id, role: user.role });
 
     const fresh = db.prepare(`SELECT * FROM users WHERE id = ?`).get(user.id);

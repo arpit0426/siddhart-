@@ -286,12 +286,16 @@ await suite.test('a new seller only becomes discoverable after publishing, with 
     category: 'Grocery',
     price: 42,
     stock: 6,
+    isPublished: true,
   });
   assert.equal(product.status, 201, JSON.stringify(product.body));
   createdStoreProductId = product.body.product.id;
 
+  const draft = await server.client().get('/api/customer/products?query=Sunrise%20Poha');
+  assert.equal(productIds(draft.body).includes(createdStoreProductId), false, 'draft store is not discoverable');
+  assert.equal((await seller.post('/api/seller/store/publish')).status, 200);
   const beforePublish = await server.client().get('/api/customer/products?query=Sunrise%20Poha');
-  assert.equal(productIds(beforePublish.body).includes(createdStoreProductId), true, 'open store is discoverable');
+  assert.equal(productIds(beforePublish.body).includes(createdStoreProductId), true, 'published store is discoverable');
   assert.equal((await server.client().get(`/api/customer/products/${createdStoreProductId}`)).status, 200);
 
   // Unpublish → hidden from discovery, direct lookup must fail too.
@@ -677,14 +681,18 @@ await suite.test('seller signup creates the store in the same transaction', asyn
   assert.equal(registered.status, 201, JSON.stringify(registered.body));
   assert.equal(registered.body.user.role, 'seller');
 
-  // The store exists, belongs to this seller only, and is published + open.
+  // Signup creates an owned draft. The seller previews before publishing.
   const store = await client.get('/api/seller/store');
   assert.equal(store.status, 200);
   assert.equal(store.body.store.name, 'Green Basket Bazaar');
-  assert.equal(store.body.store.status, 'open');
-  assert.ok(store.body.store.published_at, 'store must be published at signup');
+  assert.equal(store.body.store.status, 'inactive');
+  assert.equal(store.body.store.is_published, 0);
+  assert.equal(store.body.store.published_at, null);
+  const preview = await client.get('/api/seller/store/preview');
+  assert.equal(preview.body.store.name, 'Green Basket Bazaar');
+  assert.equal((await client.post('/api/seller/store/publish')).status, 200);
 
-  // Discovery immediately lists the published store.
+  // Discovery lists the store only after explicit publication.
   const discovery = await server.client().get('/api/customer/stores?query=Green%20Basket');
   assert.ok(discovery.body.stores.some((row: any) => row.name === 'Green Basket Bazaar'));
 });

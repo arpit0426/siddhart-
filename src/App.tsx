@@ -3,6 +3,7 @@ import { ToastProvider } from './context/ToastContext';
 import { AuthProvider, useAuth, roleHome } from './context/AuthContext';
 import { CartProvider } from './context/CartContext';
 import { AppShell } from './components/layout/AppShell';
+import { SellerShell } from './components/layout/SellerShell';
 import { RequireRole } from './components/RequireRole';
 import { matchPath, navigate, useRoutePath } from './lib/router';
 import {
@@ -36,6 +37,9 @@ import {
   SellerProductsPage,
   SellerRequestsPage,
   SellerStorePage,
+  SellerStorePreviewPage, SellerBusinessPage, SellerEarningsPage,
+  SellerStockRequestsPage, SellerReservationsPage, SellerNotificationsPage, SellerSupportPage,
+  SellerProfilePage, SellerSettingsPage, SellerSecurityPage,
 } from './pages/seller';
 import {
   RiderDashboardPage,
@@ -186,108 +190,35 @@ function resolveRoute(path: string): RouteMatch {
   }
 
   /* ------------------------------ Seller -------------------------------- */
-  if (pathname === '/seller') {
-    return {
-      key: 'seller',
-      element: (
-        <RequireRole role="seller">
-          <SellerDashboardPage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/orders') {
-    return {
-      key: 'seller-orders',
-      element: (
-        <RequireRole role="seller">
-          <SellerOrdersPage />
-        </RequireRole>
-      ),
-    };
-  }
+  const sellerPages: Record<string, React.ReactNode> = {
+    '/seller': <SellerDashboardPage />,
+    '/seller/dashboard': <SellerDashboardPage />,
+    '/seller/orders': <SellerOrdersPage />,
+    '/seller/products': <SellerProductsPage />,
+    '/seller/products/new': <ProductEditorPage />,
+    '/seller/inventory': <SellerInventoryPage />,
+    '/seller/requests': <SellerStockRequestsPage />,
+    '/seller/stock-requests': <SellerStockRequestsPage />,
+    '/seller/reservations': <SellerReservationsPage />,
+    '/seller/store': <SellerStorePage />,
+    '/seller/store/hours': <SellerStorePage section="hours" />,
+    '/seller/store/location': <SellerStorePage section="location" />,
+    '/seller/store/preview': <SellerStorePreviewPage />,
+    '/seller/business': <SellerBusinessPage />,
+    '/seller/performance': <SellerPerformancePage />,
+    '/seller/analytics': <SellerPerformancePage />,
+    '/seller/earnings': <SellerEarningsPage />,
+    '/seller/notifications': <SellerNotificationsPage />,
+    '/seller/support': <SellerSupportPage />,
+    '/seller/profile': <SellerProfilePage />,
+    '/seller/settings': <SellerSettingsPage />,
+    '/seller/settings/security': <SellerSecurityPage />,
+  };
+  if (sellerPages[pathname]) return { key: pathname.startsWith('/seller/store') && pathname !== '/seller/store/preview' ? 'seller-store' : pathname, element: <RequireRole role="seller">{sellerPages[pathname]}</RequireRole> };
   const sellerOrderMatch = matchPath('/seller/orders/:id', pathname);
-  if (sellerOrderMatch) {
-    return {
-      key: `seller-order-${sellerOrderMatch.id}`,
-      element: (
-        <RequireRole role="seller">
-          <SellerOrderDetailPage orderId={sellerOrderMatch.id} />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/products') {
-    return {
-      key: 'seller-products',
-      element: (
-        <RequireRole role="seller">
-          <SellerProductsPage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/products/new') {
-    return {
-      key: 'seller-product-new',
-      element: (
-        <RequireRole role="seller">
-          <ProductEditorPage />
-        </RequireRole>
-      ),
-    };
-  }
+  if (sellerOrderMatch) return { key: `seller-order-${sellerOrderMatch.id}`, element: <RequireRole role="seller"><SellerOrderDetailPage orderId={sellerOrderMatch.id} /></RequireRole> };
   const sellerProductMatch = matchPath('/seller/products/:id', pathname);
-  if (sellerProductMatch) {
-    return {
-      key: `seller-product-${sellerProductMatch.id}`,
-      element: (
-        <RequireRole role="seller">
-          <ProductEditorPage productId={sellerProductMatch.id} />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/inventory') {
-    return {
-      key: 'seller-inventory',
-      element: (
-        <RequireRole role="seller">
-          <SellerInventoryPage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/requests') {
-    return {
-      key: 'seller-requests',
-      element: (
-        <RequireRole role="seller">
-          <SellerRequestsPage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/store') {
-    return {
-      key: 'seller-store',
-      element: (
-        <RequireRole role="seller">
-          <SellerStorePage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/performance') {
-    return {
-      key: 'seller-performance',
-      element: (
-        <RequireRole role="seller">
-          <SellerPerformancePage />
-        </RequireRole>
-      ),
-    };
-  }
+  if (sellerProductMatch) return { key: `seller-product-${sellerProductMatch.id}`, element: <RequireRole role="seller"><ProductEditorPage productId={sellerProductMatch.id} /></RequireRole> };
 
   /* ------------------------------- Rider -------------------------------- */
   if (pathname === '/rider') {
@@ -356,13 +287,16 @@ const Shell: React.FC = () => {
 
   // Workspace home shortcuts for signed-in users hitting the landing page.
   React.useEffect(() => {
-    if (path === '/' && user) {
+    if (user && (path === '/' || /^\/(customer|seller|rider)\/(auth|signup|recover)(\?|$)/.test(path))) {
       const home = roleHome(user.role);
       if (home !== '/discover') navigate(home, { replace: true });
     }
   }, [path, user]);
 
-  return <AppShell>{route ? route.element : <NotFoundPage />}</AppShell>;
+  const content = <React.Fragment key={route?.key}>{route ? route.element : <NotFoundPage />}</React.Fragment>;
+  if (path === '/' || /^\/(customer|seller|rider)\/(auth|login|signup|recover)(\?|$)/.test(path)) return content;
+  if (user?.role === 'seller' && (path === '/seller' || path.startsWith('/seller/')) && !/\/(auth|signup|recover)(\?|$)/.test(path)) return <SellerShell>{content}</SellerShell>;
+  return <AppShell>{content}</AppShell>;
 };
 
 export default function App() {

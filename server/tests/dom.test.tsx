@@ -118,7 +118,7 @@ const stubFetch = async (input: any, init?: any) => {
     if (/\/api\/customer\/stores\/[^/?]+$/.test(path)) return json({ store, products: [product] });
     return json({ stores: [store] });
   }
-  if (path === '/api/customer/categories') return json({ categories: ['Dairy', 'Staples & Grains'] });
+  if (path === '/api/customer/categories') return json({ categories: [{ category: 'Dairy', count: 1 }, { category: 'Staples & Grains', count: 0 }] });
   if (path === '/api/customer/cart') {
     return json({ cart: { id: 'cart_demo_01' }, items: [], stores: [], subtotal: 0 });
   }
@@ -160,7 +160,8 @@ const stubFetch = async (input: any, init?: any) => {
   if (path === '/api/customer/addresses') return json({ addresses: [] });
   if (path === '/api/customer/reservations') return json({ reservations: [] });
   if (path === '/api/customer/stock-requests') return json({ requests: [] });
-  if (path === '/api/seller/orders') return json({ orders: [] });
+  if (path.startsWith('/api/seller/orders?') || path === '/api/seller/orders') return json({ orders: [], counts: {}, pagination: { page: 1, pageSize: 15, pages: 1, total: 0 } });
+  if (path === '/api/seller/dashboard') return json({ store: { ...store, opens_at: '08:00', closes_at: '22:00', is_published: 1 }, metrics: { todayOrders: 0, todayRevenue: 0, pendingOrders: 0, lowStockCount: 0, totalProducts: 1, healthy: 1 }, actionRequired: {}, orderCounts: {}, liveOrders: [], lowStock: [], daily: [], setup: { percent: 100, checks: [] }, unreadNotifications: 0 });
   if (path === '/api/rider/jobs/available') return json({ jobs: [], upcoming: [] });
   if (path === '/api/rider/dashboard') {
     return json({
@@ -273,7 +274,7 @@ await suite.test('product and store deep links render their detail pages', async
 await suite.test('role auth pages offer login, demo account, signup and recovery', async () => {
   for (const role of ['customer', 'seller', 'rider']) {
     const view = await renderAt(`/${role}/auth`);
-    assert.match(view.text, new RegExp(`${role} login`, 'i'));
+    assert.match(view.text, role === 'seller' ? /NearBuy Seller/ : new RegExp(`${role} login`, 'i'));
     assert.match(view.text, /Forgot Password\?/);
     assert.match(view.text, new RegExp(`Create ${role.charAt(0).toUpperCase() + role.slice(1)} Account`));
     assert.match(view.text, /Use Demo Account/);

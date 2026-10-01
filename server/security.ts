@@ -102,14 +102,13 @@ export function originGuard(req: Request, res: Response, next: NextFunction) {
   });
 }
 
-export function setSessionCookie(res: Response, token: string, expiresAt: Date) {
+export function setSessionCookie(res: Response, token: string, expiresAt: Date, remember = true) {
   const parts = [
     `${config.sessionCookieName}=${encodeURIComponent(token)}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
-    `Expires=${expiresAt.toUTCString()}`,
-    `Max-Age=${Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000))}`,
+    ...(remember ? [`Expires=${expiresAt.toUTCString()}`, `Max-Age=${Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000))}`] : []),
   ];
   if (config.cookieSecure) parts.push('Secure');
   res.append('Set-Cookie', parts.join('; '));

@@ -29,7 +29,7 @@ type Role = 'customer' | 'seller' | 'rider';
 
 const ROLE_HOME: Record<Role, string> = {
   customer: '/customer',
-  seller: '/seller',
+  seller: '/seller/dashboard',
   rider: '/rider',
 };
 
