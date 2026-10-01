@@ -95,10 +95,43 @@ export const ROLE_META: Record<Role, RoleMeta> = {
   },
 };
 
-/** Only same-app relative paths are honoured as post-login redirect targets. */
+/**
+ * Post-login redirect targets are resolved so a successful sign-up/login ALWAYS
+ * lands inside the signed-in user's own workspace — never on another role's
+ * gate screen, another login page, or a dead 404.
+ */
+function normalisePath(raw: string): string {
+  return raw.split('?')[0].replace(/\/+$/, '') || '/';
+}
+
+/** The role that owns a workspace path, or null for anything unrecognised. */
+function ownerRoleForPath(raw: string): Role | null {
+  const pathname = normalisePath(raw);
+  if (/^\/seller(\/|$)/.test(pathname)) return 'seller';
+  if (/^\/rider(\/|$)/.test(pathname)) return 'rider';
+  if (/^\/customer(\/|$)/.test(pathname)) return 'customer';
+  // Legacy flat customer surface (catalogue + cart/checkout/orders/…).
+  if (/^\/(cart|checkout|orders|requests|account|discover|products|stores)(\/|$)/.test(pathname)) {
+    return 'customer';
+  }
+  return null;
+}
+
+function isAuthSurface(raw: string): boolean {
+  const pathname = normalisePath(raw);
+  return pathname === '/' || /^\/(customer|seller|rider)\/(auth|login|signup|recover)$/.test(pathname);
+}
+
+/**
+ * Only same-app relative paths inside the signed-in user's OWN workspace are
+ * honoured as post-login redirect targets. Anything else (another role's pages,
+ * auth screens, unknown paths) falls back to the role's home workspace.
+ */
 function safeNext(raw: string | null, role: Role): string {
-  if (!raw) return roleHome(role);
-  if (!raw.startsWith('/') || raw.startsWith('//')) return roleHome(role);
+  const home = roleHome(role);
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return home;
+  if (isAuthSurface(raw)) return home;
+  if (ownerRoleForPath(raw) !== role) return home;
   return raw;
 }
 
