@@ -24,7 +24,9 @@ FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     PORT=3000 \
     DATABASE_FILE=/app/data/nearbuy.db \
-    UPLOADS_DIR=/app/data/uploads
+    UPLOADS_DIR=/app/data/uploads \
+    ENABLE_DEMO_ACCOUNTS=true \
+    DEMO_MODE=true
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force

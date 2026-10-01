@@ -33,6 +33,7 @@ import {
   requireString,
 } from '../validation.js';
 import { randomId } from '../codes.js';
+import { seedDemoData } from '../seed.js';
 
 export const authRouter = Router();
 authRouter.use((_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
@@ -232,7 +233,24 @@ authRouter.post(
 
     if (!password) throw ApiError.badRequest('Password is required.');
 
-    const user = findUserByIdentifier(identifier);
+    let user = findUserByIdentifier(identifier);
+
+    // If a demo account was requested but not found in the database yet (e.g. deployed without demo seeding),
+    // seed the demo accounts on demand so that demo login always succeeds.
+    if (
+      !user &&
+      (identifier.endsWith('.demo@nearbuy.app') ||
+        identifier === '+91 98765 43210' ||
+        identifier === '+91 98112 34567' ||
+        identifier === '+91 98111 22334')
+    ) {
+      try {
+        seedDemoData();
+        user = findUserByIdentifier(identifier);
+      } catch (err: any) {
+        logger.error('seed.on_demand_failed', { message: err?.message });
+      }
+    }
 
     // Generic error message: never reveal whether an email/phone is registered.
     if (!user || (!config.demoMode && user.email.endsWith('.demo@nearbuy.app'))) {

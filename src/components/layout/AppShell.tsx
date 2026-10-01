@@ -76,7 +76,7 @@ export const AppShell: React.FC<{ children: React.ReactNode; cartCount?: number 
   children,
   cartCount = 0,
 }) => {
-  const { user, logout } = useAuth();
+  const { user, login, logout } = useAuth();
   const path = useRoutePath();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -217,6 +217,38 @@ export const AppShell: React.FC<{ children: React.ReactNode; cartCount?: number 
                     <div className="border-b border-slate-100 px-4 py-3">
                       <p className="text-sm font-semibold text-slate-900">{user.name}</p>
                       <p className="text-xs text-slate-500">{ROLE_LABEL[user.role]} · {user.email}</p>
+                    </div>
+                    <div className="border-b border-slate-100 bg-slate-50/70 px-4 py-2.5">
+                      <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Switch Demo Role
+                      </p>
+                      <div className="flex flex-col gap-1">
+                        {(['customer', 'seller', 'rider'] as Role[]).map((r) => (
+                          <button
+                            key={r}
+                            type="button"
+                            disabled={user.role === r}
+                            onClick={async () => {
+                              setAccountOpen(false);
+                              const creds = {
+                                customer: { email: 'customer.demo@nearbuy.app', password: 'NearBuy@2026' },
+                                seller: { email: 'seller.demo@nearbuy.app', password: 'NearBuy@2026' },
+                                rider: { email: 'rider.demo@nearbuy.app', password: 'NearBuy@2026' },
+                              }[r];
+                              const signedIn = await login({ email: creds.email, password: creds.password, role: r });
+                              navigate(roleHome(signedIn.role));
+                            }}
+                            className={`flex items-center justify-between rounded-lg px-2 py-1.5 text-xs text-left transition-colors ${
+                              user.role === r
+                                ? 'bg-blue-100/70 font-semibold text-blue-800 cursor-default'
+                                : 'text-slate-700 hover:bg-white hover:shadow-xs'
+                            }`}
+                          >
+                            <span className="capitalize">{r}</span>
+                            {user.role === r && <span className="text-[10px] text-blue-600 font-medium">Active</span>}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     <Link
                       to={user.role === 'customer' ? '/account' : user.role === 'seller' ? '/seller/store' : '/rider/profile'}

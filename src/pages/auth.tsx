@@ -29,6 +29,7 @@ import {
   SuccessNote,
 } from '../components/ui';
 import { NearBuyMark, NearBuyWordmark } from '../components/brand';
+import { ConnectionStatus } from '../components/ConnectionStatus';
 import type { Role } from '../types';
 
 /* -------------------------------------------------------------------------- */
@@ -92,6 +93,27 @@ export const ROLE_META: Record<Role, RoleMeta> = {
     loginSubtitle: 'Sign in to claim nearby deliveries, verify handoffs and track earnings.',
     signupCta: 'Create Rider Account',
     demoName: 'Arjun Kumar',
+  },
+};
+
+export const DEMO_ACCOUNTS: Record<Role, { role: Role; name: string; email: string; password: string }> = {
+  customer: {
+    role: 'customer',
+    name: 'Aarav Sharma',
+    email: 'customer.demo@nearbuy.app',
+    password: 'NearBuy@2026',
+  },
+  seller: {
+    role: 'seller',
+    name: 'Rahul Verma',
+    email: 'seller.demo@nearbuy.app',
+    password: 'NearBuy@2026',
+  },
+  rider: {
+    role: 'rider',
+    name: 'Arjun Kumar',
+    email: 'rider.demo@nearbuy.app',
+    password: 'NearBuy@2026',
   },
 };
 
@@ -170,13 +192,16 @@ export const AuthLayout: React.FC<{ children: React.ReactNode; wide?: boolean }>
         <Link to="/" className="rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600">
           <NearBuyWordmark size={36} tagline />
         </Link>
-        <Link
-          to="/customer/auth"
-          className="hidden items-center gap-1.5 rounded-lg border border-slate-200 bg-white/80 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:border-blue-300 hover:text-blue-700 sm:inline-flex"
-        >
-          <ShoppingBag className="h-3.5 w-3.5" aria-hidden="true" />
-          Shop as a customer
-        </Link>
+        <div className="flex items-center gap-2.5">
+          <ConnectionStatus />
+          <Link
+            to="/customer/auth"
+            className="hidden items-center gap-1.5 rounded-lg border border-slate-200 bg-white/80 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:border-blue-300 hover:text-blue-700 sm:inline-flex"
+          >
+            <ShoppingBag className="h-3.5 w-3.5" aria-hidden="true" />
+            Shop as a customer
+          </Link>
+        </div>
       </div>
     </header>
     <main id="main" className="relative z-10 flex-1 px-4 pb-10 sm:px-6">
@@ -252,8 +277,9 @@ export const AuthGatewayPage: React.FC = () => {
 
   // One-click demo entry: real backend login, then straight into the workspace.
   const enterDemo = async (role: Role) => {
-    const account = config?.demoAccounts.find((entry) => entry.role === role);
-    if (!account) return;
+    const account =
+      (config?.demoAccounts && config.demoAccounts.find((entry) => entry.role === role)) ||
+      DEMO_ACCOUNTS[role];
     setDemoError(null);
     setDemoBusy(role);
     try {
@@ -364,9 +390,12 @@ export const AuthGatewayPage: React.FC = () => {
               One secure gateway for customers, sellers and riders.
             </p>
           </div>
-          <h2 id="gateway-heading" className="mt-6 text-xl font-bold tracking-tight text-slate-900 lg:mt-0">
-            Choose your role to continue
-          </h2>
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-2 lg:mt-0">
+            <h2 id="gateway-heading" className="text-xl font-bold tracking-tight text-slate-900">
+              Choose your role to continue
+            </h2>
+            <ConnectionStatus compact />
+          </div>
           <p className="mt-1 text-sm text-slate-600">
             Login, Sign Up or Recover — each role has its own workspace.
           </p>
@@ -409,19 +438,17 @@ export const AuthGatewayPage: React.FC = () => {
                       <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                     </Link>
                   </div>
-                  {config?.demoMode && config.demoAccounts.some((entry) => entry.role === role) && (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="mt-2 w-full"
-                      disabled={demoBusy !== null}
-                      onClick={() => enterDemo(role)}
-                    >
-                      <BadgeCheck className="h-3.5 w-3.5 text-blue-600" aria-hidden="true" />
-                      {demoBusy === role ? 'Signing in…' : `Enter as demo ${meta.name.toLowerCase()}`}
-                    </Button>
-                  )}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="mt-2 w-full"
+                    disabled={demoBusy !== null}
+                    onClick={() => enterDemo(role)}
+                  >
+                    <BadgeCheck className="h-3.5 w-3.5 text-blue-600" aria-hidden="true" />
+                    {demoBusy === role ? 'Signing in…' : `Enter as demo ${meta.name.toLowerCase()}`}
+                  </Button>
                   <div className="mt-2.5 text-center">
                     <Link
                       to={`/${role}/recover`}
@@ -442,16 +469,14 @@ export const AuthGatewayPage: React.FC = () => {
             </div>
           )}
 
-          {config?.demoMode && (
-            <p className="mt-5 inline-flex items-start gap-2 self-start rounded-xl border border-blue-200 bg-blue-50/80 px-3 py-2 text-[11px] text-blue-900">
-              <BadgeCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              <span>
-                <strong className="font-semibold">Ready to use:</strong> every role card has an
-                <em> Enter as demo</em> button — a working account seeded into the real database.
-                One click signs you in.
-              </span>
-            </p>
-          )}
+          <p className="mt-5 inline-flex items-start gap-2 self-start rounded-xl border border-blue-200 bg-blue-50/80 px-3 py-2 text-[11px] text-blue-900">
+            <BadgeCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              <strong className="font-semibold">Ready to use:</strong> every role card has an
+              <em> Enter as demo</em> button — working accounts seeded into the real database.
+              One click signs you in.
+            </span>
+          </p>
         </section>
       </div>
     </AuthLayout>
@@ -481,7 +506,9 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
     document.title = `${meta.loginTitle} · NearBuy`;
   }, [meta.loginTitle]);
 
-  const demoAccount = config?.demoAccounts.find((account) => account.role === role);
+  const demoAccount =
+    (config?.demoAccounts && config.demoAccounts.find((account) => account.role === role)) ||
+    DEMO_ACCOUNTS[role];
 
   // Cookie sessions are redirected by the server. Bearer-only sessions (embedded
   // preview) land here after a refresh and should continue straight in.
@@ -506,14 +533,30 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
   if (user && user.role !== role) {
     return (
       <AuthLayout>
-        <div className="mx-auto mt-10 max-w-md">
+        <div className="mx-auto mt-10 max-w-md space-y-4">
           <ErrorNote>
-            You are already signed in as a {user.role} ({user.email}). Sign out first, or continue to your{' '}
-            <Link to={roleHome(user.role)} className="font-semibold underline">
-              {user.role} workspace
-            </Link>
-            .
+            You are currently signed in as a {user.role} ({user.email}). You can switch to the demo {meta.name.toLowerCase()} account or continue to your {user.role} workspace.
           </ErrorNote>
+          <div className="flex flex-col gap-2.5">
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => signIn(demoAccount.email, demoAccount.password)}
+              disabled={loading}
+              className="w-full"
+            >
+              <BadgeCheck className="h-4 w-4" aria-hidden="true" />
+              Switch to demo {meta.name.toLowerCase()} account
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => navigate(roleHome(user.role), { replace: true })}
+              className="w-full"
+            >
+              Continue to {user.role} workspace
+            </Button>
+          </div>
         </div>
       </AuthLayout>
     );
@@ -531,12 +574,15 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
         </Link>
 
         <div className="rounded-2xl border border-slate-200 bg-white/95 p-6 shadow-xl shadow-blue-900/5 sm:p-8">
-          <div className="flex items-center gap-3">
-            <span className={`inline-flex rounded-xl p-2.5 text-white ${meta.chip}`}>{meta.icon}</span>
-            <div>
-              <h1 className="text-xl font-extrabold tracking-tight text-slate-900">{meta.loginTitle}</h1>
-              <p className="text-xs text-slate-500">{meta.chipLabel} · {meta.tagline}</p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className={`inline-flex rounded-xl p-2.5 text-white ${meta.chip}`}>{meta.icon}</span>
+              <div>
+                <h1 className="text-xl font-extrabold tracking-tight text-slate-900">{meta.loginTitle}</h1>
+                <p className="text-xs text-slate-500">{meta.chipLabel} · {meta.tagline}</p>
+              </div>
             </div>
+            <ConnectionStatus compact />
           </div>
           <p className="mt-3 text-sm text-slate-600">{meta.loginSubtitle}</p>
           {role === 'seller' && <SellerAuthTabs active="auth" />}
@@ -588,7 +634,7 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
             </Link>
           </div>
 
-          {config?.demoMode && demoAccount && (
+          {demoAccount && (
             <div className="mt-6 rounded-xl border border-dashed border-blue-300 bg-blue-50/60 p-4">
               <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">
                 Working {meta.name} account
