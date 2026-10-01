@@ -73,6 +73,8 @@ workspace by editing the URL — the server decides.
 | `/customer/signup`, `/seller/signup`, `/rider/signup` | Role registration |
 | `/customer/recover`, `/seller/recover`, `/rider/recover` | Password recovery + reset |
 | `/customer/*`, `/seller/*`, `/rider/*`, `/cart`, `/checkout`, `/orders`, … | Protected workspaces |
+| `/seller/dashboard` | Where every seller login lands (`/seller` redirects here). Sellers get a dedicated shell: left sidebar on desktop, top bar + bottom nav (Home / Orders / Products / More) on phones and tablets |
+| `/seller/orders`, `/products`, `/inventory`, `/reservations`, `/stock-requests`, `/store`, `/analytics`, `/earnings`, `/notifications`, `/support`, `/profile`, `/business`, `/settings`, `/settings/security` | Seller workspace pages |
 | `/:role/login` | Legacy alias → redirects into `/:role/auth` |
 
 ### Routing rules (enforced twice)

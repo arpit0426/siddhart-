@@ -3,6 +3,8 @@ import { ToastProvider } from './context/ToastContext';
 import { AuthProvider, useAuth, roleHome } from './context/AuthContext';
 import { CartProvider, useCart } from './context/CartContext';
 import { AppShell } from './components/layout/AppShell';
+import { SellerShell } from './components/layout/SellerShell';
+import { Spinner } from './components/ui';
 import { RequireRole } from './components/RequireRole';
 import { matchPath, navigate, useRoutePath } from './lib/router';
 import {
@@ -38,6 +40,7 @@ import {
   SellerRequestsPage,
   SellerStorePage,
 } from './pages/seller';
+import { SellerBusinessPage, SellerProfilePage, SellerSettingsPage } from './pages/sellerAccount';
 import {
   RiderActivePage,
   RiderDashboardPage,
@@ -206,6 +209,18 @@ function resolveRoute(path: string): RouteMatch {
   /* ------------------------------ Seller -------------------------------- */
   if (pathname === '/seller') {
     return {
+      key: 'seller-redirect',
+      element: (
+        <Redirect to="/seller/dashboard">
+          <RequireRole role="seller">
+            <SellerDashboardPage />
+          </RequireRole>
+        </Redirect>
+      ),
+    };
+  }
+  if (pathname === '/seller/dashboard') {
+    return {
       key: 'seller',
       element: (
         <RequireRole role="seller">
@@ -213,6 +228,21 @@ function resolveRoute(path: string): RouteMatch {
         </RequireRole>
       ),
     };
+  }
+  {
+    const sellerOnly = (key: string, element: React.ReactNode): RouteMatch => ({
+      key,
+      element: <RequireRole role="seller">{element}</RequireRole>,
+    });
+    if (pathname === '/seller/stock-requests') return sellerOnly('seller-stock-requests', <SellerRequestsPage view="stock" />);
+    if (pathname === '/seller/reservations') return sellerOnly('seller-reservations', <SellerRequestsPage view="reservations" />);
+    if (pathname === '/seller/analytics') return sellerOnly('seller-analytics', <SellerPerformancePage />);
+    if (pathname === '/seller/profile') return sellerOnly('seller-profile', <SellerProfilePage />);
+    if (pathname === '/seller/business') return sellerOnly('seller-business', <SellerBusinessPage />);
+    if (pathname === '/seller/settings') return sellerOnly('seller-settings', <SellerSettingsPage />);
+    if (pathname === '/seller/settings/security') {
+      return sellerOnly('seller-settings-security', <SecuritySettingsPage role="seller" />);
+    }
   }
   if (pathname === '/seller/orders') {
     return {
@@ -397,6 +427,14 @@ function resolveRoute(path: string): RouteMatch {
   return { key: '404', element: <NotFoundPage /> };
 }
 
+/** Replaces the URL with `to`; renders `children` meanwhile so there is no blank/spinner flash. */
+const Redirect: React.FC<{ to: string; children?: React.ReactNode }> = ({ to, children }) => {
+  React.useEffect(() => {
+    navigate(to, { replace: true });
+  }, [to]);
+  return <>{children ?? <Spinner label="Opening your workspace…" />}</>;
+};
+
 const Shell: React.FC = () => {
   const path = useRoutePath();
   const { user } = useAuth();
@@ -411,7 +449,13 @@ const Shell: React.FC = () => {
     }
   }, [path, user]);
 
-  return <AppShell cartCount={itemCount}>{route ? route.element : <NotFoundPage />}</AppShell>;
+  const content = route ? route.element : <NotFoundPage />;
+
+  // Signed-in sellers get their own operating workspace (sidebar / bottom nav).
+  if (user?.role === 'seller' && /^\/seller(\/|$|\?)/.test(path)) {
+    return <SellerShell>{content}</SellerShell>;
+  }
+  return <AppShell cartCount={itemCount}>{content}</AppShell>;
 };
 
 export default function App() {

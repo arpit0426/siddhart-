@@ -477,13 +477,27 @@ sellerRouter.get(
       res.json({ orders: [] });
       return;
     }
-    const status = typeof req.query.status === 'string' ? req.query.status : '';
+    // `status` accepts a comma-separated list; `q` searches the order number. Both are
+    // bound parameters and the query is always scoped to the seller's own store.
+    const known = new Set(['placed', 'accepted', 'preparing', 'packed', 'ready_for_pickup', 'picked_up', 'out_for_delivery', 'delivered', 'cancelled', 'rejected']);
+    const statuses =
+      typeof req.query.status === 'string'
+        ? req.query.status.split(',').map((value) => value.trim()).filter((value) => known.has(value))
+        : [];
+    const search = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 40) : '';
+    const clauses = ['store_id = ?'];
+    const args: (string | number)[] = [store.id];
+    if (statuses.length > 0) {
+      clauses.push(`status IN (${statuses.map(() => '?').join(',')})`);
+      args.push(...statuses);
+    }
+    if (search) {
+      clauses.push(`order_number LIKE ? ESCAPE '\\'`);
+      args.push(`%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+    }
     const rows = db
-      .prepare(
-        `SELECT id FROM orders WHERE store_id = ? ${status ? 'AND status = ?' : ''}
-         ORDER BY created_at DESC LIMIT 200`
-      )
-      .all(...(status ? [store.id, status] : [store.id])) as any[];
+      .prepare(`SELECT id FROM orders WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT 200`)
+      .all(...args) as any[];
     res.json({ orders: rows.map((row) => hydrateOrder(row.id, 'seller')) });
   })
 );
@@ -885,8 +899,20 @@ sellerRouter.get(
         .all(store.id) as any[]
     ).map((row) => hydrateOrder(row.id, 'seller'));
 
+    // Compact live board: every order the seller still has to act on or hand over.
+    const liveOrders = (
+      db
+        .prepare(
+          `SELECT id FROM orders
+           WHERE store_id = ? AND status IN ('placed','accepted','preparing','packed','ready_for_pickup')
+           ORDER BY created_at DESC LIMIT 40`
+        )
+        .all(store.id) as any[]
+    ).map((row) => hydrateOrder(row.id, 'seller'));
+
     res.json({
       store,
+      liveOrders,
       metrics: {
         totalOrders: metricRow.total_orders,
         revenue: toRupees(metricRow.revenue),

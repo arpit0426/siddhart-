@@ -35,7 +35,7 @@ const CUSTOMER_NAV: NavItem[] = [
 ];
 
 const SELLER_NAV: NavItem[] = [
-  { label: 'Dashboard', to: '/seller' },
+  { label: 'Dashboard', to: '/seller/dashboard' },
   { label: 'Orders', to: '/seller/orders' },
   { label: 'Products', to: '/seller/products' },
   { label: 'Requests', to: '/seller/requests' },

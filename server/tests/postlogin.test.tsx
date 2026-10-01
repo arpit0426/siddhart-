@@ -117,7 +117,7 @@ const EMAILS = {
 
 /* Scenario 1: fresh visitor logs in through each role's login page. */
 await suite.test('fresh login through the login page lands in the role workspace', async () => {
-  const landing = { customer: /Shop by category/, seller: /Dashboard/, rider: /You are (online|offline)/ } as const;
+  const landing = { customer: /Shop by category/, seller: /Needs Your Attention/, rider: /You are (online|offline)/ } as const;
   for (const role of ['customer', 'seller', 'rider'] as const) {
     resetBrowserSession();
     const app = mount(`/${role}/auth`);
@@ -125,7 +125,8 @@ await suite.test('fresh login through the login page lands in the role workspace
     await app.type(/Password/, 'NearBuy@2026');
     await app.click(/^Login$/);
     await app.waitFor(landing[role]);
-    assert.equal(window.location.pathname, `/${role}`, `${role} should land on /${role}, got ${window.location.pathname}`);
+    const home = role === 'seller' ? '/seller/dashboard' : `/${role}`;
+    assert.equal(window.location.pathname, home, `${role} should land on ${home}, got ${window.location.pathname}`);
     const gate = /This workspace is for|Redirecting to sign in|Something went wrong/i;
     assert.ok(!gate.test(app.text()), `${role} hit a gate after login: ${app.text().slice(0, 200)}`);
     assert.deepEqual([...apiFailures], [], `${role}: unexpected API failures after login`);
@@ -231,6 +232,69 @@ await suite.test('sign out then sign back in reopens the workspace cleanly', asy
   assert.equal(window.location.pathname, '/customer');
   assert.deepEqual([...apiFailures], [], 're-login: unexpected API failures');
   assert.deepEqual([...consoleErrors], [], 're-login: console errors');
+  app.unmount();
+});
+
+/* Scenario 7: seller login opens the dedicated seller workspace with real data. */
+await suite.test('seller login opens the seller workspace shell without errors', async () => {
+  resetBrowserSession();
+  const app = mount('/seller/auth?next=%2Fseller');
+  await app.type(/Email/, EMAILS.seller);
+  await app.type(/Password/, 'NearBuy@2026');
+  await app.click(/^Login$/);
+  await app.waitFor(/Needs Your Attention/);
+  assert.equal(window.location.pathname, '/seller/dashboard');
+  await sleep(600);
+  const text = app.text();
+  for (const label of ['Dashboard', 'Orders', 'Products', 'Inventory', 'Reservations', 'Stock Requests', 'Analytics', 'Earnings', 'Logout', 'Dwarka Fresh Mart', "Today's Orders", "Today's Sales", 'Pending Orders', 'Live Orders']) {
+    assert.ok(text.includes(label), `seller workspace should show "${label}"`);
+  }
+  assert.ok(/Good (morning|afternoon|evening), Rahul/.test(text), 'greets the seller by first name');
+  assert.ok(document.querySelector('aside nav[aria-label="Seller workspace"]'), 'desktop sidebar present');
+  assert.ok(document.querySelector('nav[aria-label="Seller quick navigation"]'), 'mobile bottom navigation present');
+  assert.ok(!/This workspace is for|Redirecting to sign in|Something went wrong|couldn't load/i.test(text), 'no gate or error state');
+  assert.deepEqual([...apiFailures], [], 'seller: unexpected API failures after login');
+  assert.deepEqual([...consoleErrors], [], 'seller: console errors after login');
+  app.unmount();
+});
+
+/* Scenario 8: every seller page opens cleanly; logout and demo re-entry work. */
+await suite.test('every seller page opens cleanly and seller can log out and back in', async () => {
+  resetBrowserSession();
+  const app = mount('/seller/auth');
+  await app.click(/Use Demo Account/);
+  await app.waitFor(/Needs Your Attention/);
+  assert.equal(window.location.pathname, '/seller/dashboard');
+  apiFailures.length = 0;
+  const { navigate } = await import('../../src/lib/router');
+  const pages: [string, RegExp][] = [
+    ['/seller/orders', /Search order ID/],
+    ['/seller/products', /Products/],
+    ['/seller/inventory', /Inventory/],
+    ['/seller/reservations', /Reservations/],
+    ['/seller/stock-requests', /Stock requests/],
+    ['/seller/store', /Store settings/],
+    ['/seller/analytics', /Performance/],
+    ['/seller/earnings', /Earnings|Gross/],
+    ['/seller/notifications', /Notifications/],
+    ['/seller/support', /Support|Help/],
+    ['/seller/profile', /Edit Profile/],
+    ['/seller/business', /Business Profile/],
+    ['/seller/settings', /Manage your store, account and security/],
+    ['/seller/settings/security', /Security|Password/],
+    ['/seller', /Needs Your Attention/],
+  ];
+  for (const [path, pattern] of pages) {
+    navigate(path);
+    await app.waitFor(pattern);
+    assert.ok(!/This workspace is for|Page not found|couldn't load/i.test(app.text()), `${path}: gate or error shown`);
+  }
+  assert.equal(window.location.pathname, '/seller/dashboard', 'bare /seller resolves to the dashboard');
+  assert.deepEqual([...apiFailures], [], 'seller pages: unexpected API failures');
+
+  await app.click(/^Logout$/);
+  await app.waitFor(/Choose your role to continue/);
+  assert.equal(window.location.pathname, '/');
   app.unmount();
 });
 
