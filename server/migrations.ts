@@ -685,4 +685,171 @@ export const migrations: Migration[] = [
       `);
     },
   },
+
+  {
+    id: '011_seller_workspace',
+    description: 'Merchant catalog metadata, versioned inventory, notifications, business, sessions and support',
+    up: (db) => {
+      // Main already owns the shared catalogue, support and inventory-event
+      // tables. Extend them without dropping existing portal records.
+      for (const sql of [
+        "ALTER TABLE products ADD COLUMN brand TEXT;",
+        "ALTER TABLE products ADD COLUMN unit TEXT;",
+        "ALTER TABLE products ADD COLUMN sku TEXT;",
+        "ALTER TABLE products ADD COLUMN mrp REAL;",
+        "ALTER TABLE products ADD COLUMN availability TEXT NOT NULL DEFAULT 'available'\n          CHECK(availability IN ('available','unavailable','temporary'));",
+        "ALTER TABLE products ADD COLUMN additional_images TEXT NOT NULL DEFAULT '[]';",
+        "ALTER TABLE inventory ADD COLUMN version INTEGER NOT NULL DEFAULT 0;",
+        "ALTER TABLE stores ADD COLUMN logo TEXT;",
+        "ALTER TABLE stores ADD COLUMN contact_email TEXT;",
+        "ALTER TABLE stores ADD COLUMN is_published INTEGER NOT NULL DEFAULT 1;",
+        "ALTER TABLE stores ADD COLUMN temporarily_unavailable INTEGER NOT NULL DEFAULT 0;",
+        "ALTER TABLE users ADD COLUMN profile_image TEXT;",
+        "ALTER TABLE sessions ADD COLUMN id TEXT;",
+        "ALTER TABLE delivery_jobs ADD COLUMN seller_verified_at TEXT;",
+        "ALTER TABLE delivery_jobs ADD COLUMN seller_verified_rider_id TEXT;",
+        "ALTER TABLE orders ADD COLUMN preparing_at TEXT;",
+        "ALTER TABLE orders ADD COLUMN packed_at TEXT;",
+        "ALTER TABLE inventory_events ADD COLUMN reason TEXT;",
+        "ALTER TABLE inventory_events ADD COLUMN stock_before INTEGER;",
+        "ALTER TABLE inventory_events ADD COLUMN stock_after INTEGER;",
+        "ALTER TABLE inventory_events ADD COLUMN reserved_before INTEGER;",
+        "ALTER TABLE inventory_events ADD COLUMN reserved_after INTEGER;",
+        "ALTER TABLE inventory_events ADD COLUMN reference_id TEXT;",
+        "ALTER TABLE support_tickets ADD COLUMN updated_at TEXT;"
+      ]) {
+        try { db.exec(sql); }
+        catch (error: any) {
+          if (!String(error.message).includes('duplicate column name')) throw error;
+        }
+      }
+      db.exec(`
+        UPDATE stores SET is_published = CASE WHEN status = 'inactive' OR published_at IS NULL THEN 0 ELSE 1 END;
+        UPDATE sessions SET id = 'ses_' || lower(hex(randomblob(12)));
+        CREATE UNIQUE INDEX idx_sessions_id ON sessions(id);
+
+        UPDATE inventory_events SET reason=COALESCE(reason,type),
+          stock_before=COALESCE(stock_before,CASE WHEN type IN ('reservation','reservation_release') THEN resulting_stock ELSE resulting_stock-delta END), stock_after=COALESCE(stock_after,resulting_stock);
+        UPDATE support_tickets SET updated_at=COALESCE(updated_at,created_at);
+        UPDATE products SET additional_images=extra_images WHERE extra_images IS NOT NULL AND json_valid(extra_images) AND json_type(extra_images)='array';
+        UPDATE users SET profile_image=avatar_url WHERE profile_image IS NULL;
+
+        CREATE TABLE seller_settings (
+          seller_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          email_notifications INTEGER NOT NULL DEFAULT 1,
+          order_notifications INTEGER NOT NULL DEFAULT 1,
+          low_stock_notifications INTEGER NOT NULL DEFAULT 1,
+          reservation_notifications INTEGER NOT NULL DEFAULT 1,
+          stock_request_notifications INTEGER NOT NULL DEFAULT 1,
+          security_notifications INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE business_profiles (
+          seller_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          legal_name TEXT NOT NULL DEFAULT '', owner_name TEXT NOT NULL DEFAULT '',
+          phone TEXT, email TEXT, category TEXT, address TEXT,
+          business_identifier TEXT, support_contact TEXT, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE seller_notifications (
+          id TEXT PRIMARY KEY, seller_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          category TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+          href TEXT NOT NULL, event_key TEXT, read_at TEXT, created_at TEXT NOT NULL,
+          UNIQUE(seller_id, event_key)
+        );
+        INSERT INTO business_profiles (seller_id,legal_name,owner_name,phone,email,category,address,business_identifier,support_contact,updated_at)
+          SELECT s.seller_id,COALESCE(s.legal_name,''),u.name,COALESCE(s.contact_phone,u.phone),
+            COALESCE(s.business_email,u.email),s.category,s.address,s.business_id,s.support_phone,s.updated_at
+          FROM stores s JOIN users u ON u.id=s.seller_id;
+        INSERT INTO seller_notifications (id,seller_id,category,title,body,href,event_key,read_at,created_at)
+          SELECT n.id,n.user_id,
+            CASE n.type WHEN 'inventory' THEN 'inventory' WHEN 'reservation' THEN 'reservation'
+              WHEN 'stock_request' THEN 'stock_check' WHEN 'earnings' THEN 'payout' WHEN 'account' THEN 'security' ELSE 'orders' END,
+            n.title,n.body,COALESCE(n.link,'/seller/notifications'),'legacy:' || n.id,n.read_at,n.created_at
+          FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.role='seller';
+        CREATE INDEX idx_seller_notifications_unread ON seller_notifications(seller_id, read_at, created_at DESC);
+        CREATE TABLE seller_audit_events (
+          id TEXT PRIMARY KEY, seller_id TEXT NOT NULL REFERENCES users(id),
+          action TEXT NOT NULL, resource_id TEXT, detail TEXT, created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_seller_audit ON seller_audit_events(seller_id, created_at DESC);
+        -- These are actual ledger records, never inferred payments or mock payouts.
+        CREATE TABLE seller_settlements (
+          id TEXT PRIMARY KEY, store_id TEXT NOT NULL REFERENCES stores(id),
+          amount REAL NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','processing','paid','failed')),
+          period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+          reference TEXT, paid_at TEXT, created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_settlements_store ON seller_settlements(store_id, created_at DESC);
+        CREATE TABLE seller_financial_adjustments (
+          id TEXT PRIMARY KEY, store_id TEXT NOT NULL REFERENCES stores(id),
+          order_id TEXT REFERENCES orders(id), amount REAL NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('fee','refund','adjustment')),
+          note TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_financial_store ON seller_financial_adjustments(store_id, created_at DESC);
+        CREATE INDEX idx_products_store_published ON products(store_id, is_published, name);
+        CREATE INDEX idx_orders_store_created ON orders(store_id, created_at DESC);
+        CREATE INDEX idx_order_items_order ON order_items(order_id);
+
+        CREATE TRIGGER notify_seller_order AFTER INSERT ON orders BEGIN
+          INSERT OR IGNORE INTO seller_notifications
+            (id, seller_id, category, title, body, href, event_key, created_at)
+          SELECT 'nt_' || lower(hex(randomblob(12))), seller_id, 'orders', 'New order received',
+            NEW.order_number || ' is waiting for your acceptance.', '/seller/orders/' || NEW.id,
+            'order:' || NEW.id, NEW.created_at FROM stores WHERE id = NEW.store_id;
+        END;
+        CREATE TRIGGER notify_seller_stock_request AFTER INSERT ON stock_requests BEGIN
+          INSERT OR IGNORE INTO seller_notifications
+            (id, seller_id, category, title, body, href, event_key, created_at)
+          SELECT 'nt_' || lower(hex(randomblob(12))), s.seller_id, 'stock_check', 'Customer asked about stock',
+            p.name || ' × ' || NEW.requested_quantity || '. Confirming availability does not reserve stock.',
+            '/seller/stock-requests', 'stock_request:' || NEW.id, NEW.created_at
+            FROM stores s JOIN products p ON p.id = NEW.product_id WHERE s.id = NEW.store_id;
+        END;
+        CREATE TRIGGER notify_seller_reservation AFTER INSERT ON reservations BEGIN
+          INSERT OR IGNORE INTO seller_notifications
+            (id, seller_id, category, title, body, href, event_key, created_at)
+          SELECT 'nt_' || lower(hex(randomblob(12))), s.seller_id, 'reservation', 'New reservation request',
+            p.name || ' × ' || NEW.requested_quantity || ' requested. Review before holding stock.',
+            '/seller/reservations', 'reservation:' || NEW.id, NEW.created_at
+            FROM stores s JOIN products p ON p.id = NEW.product_id WHERE s.id = NEW.store_id;
+        END;
+        CREATE TRIGGER notify_seller_low_stock AFTER UPDATE ON inventory
+          WHEN (NEW.stock_quantity - NEW.reserved_quantity) <= NEW.low_stock_threshold
+          AND ((OLD.stock_quantity - OLD.reserved_quantity) > OLD.low_stock_threshold
+               OR NEW.low_stock_threshold > OLD.low_stock_threshold)
+        BEGIN
+          INSERT INTO seller_notifications (id, seller_id, category, title, body, href, created_at)
+          SELECT 'nt_' || lower(hex(randomblob(12))), s.seller_id, 'inventory', 'Low stock alert',
+            p.name || ' has only ' || (NEW.stock_quantity - NEW.reserved_quantity) || ' units available.',
+            '/seller/inventory?stock=low', NEW.updated_at
+            FROM products p JOIN stores s ON s.id = p.store_id WHERE p.id = NEW.product_id;
+        END;
+        CREATE TRIGGER notify_seller_rider AFTER UPDATE OF rider_id ON delivery_jobs
+          WHEN NEW.rider_id IS NOT NULL AND (OLD.rider_id IS NULL OR OLD.rider_id != NEW.rider_id)
+        BEGIN
+          INSERT INTO seller_notifications (id, seller_id, category, title, body, href, created_at)
+          SELECT 'nt_' || lower(hex(randomblob(12))), s.seller_id, 'orders', 'Rider assigned',
+            u.name || ' will collect ' || o.order_number || '.', '/seller/orders/' || o.id, NEW.updated_at
+            FROM orders o JOIN stores s ON s.id = o.store_id JOIN users u ON u.id = NEW.rider_id
+            WHERE o.id = NEW.order_id;
+        END;
+        CREATE TRIGGER notify_seller_delivery AFTER UPDATE OF status ON orders
+          WHEN NEW.status = 'delivered' AND OLD.status != 'delivered'
+        BEGIN
+          INSERT INTO seller_notifications (id, seller_id, category, title, body, href, created_at)
+          SELECT 'nt_' || lower(hex(randomblob(12))), seller_id, 'orders', 'Order delivered',
+            NEW.order_number || ' has been delivered to the customer.', '/seller/orders/' || NEW.id,
+            NEW.updated_at FROM stores WHERE id = NEW.store_id;
+        END;
+        CREATE TRIGGER notify_seller_settlement AFTER INSERT ON seller_settlements BEGIN
+          INSERT INTO seller_notifications (id, seller_id, category, title, body, href, created_at)
+          SELECT 'nt_' || lower(hex(randomblob(12))), seller_id, 'payout', 'Settlement recorded',
+            'A settlement is now ' || NEW.status || '. Check earnings for details.',
+            '/seller/earnings?tab=settlements', NEW.created_at FROM stores WHERE id = NEW.store_id;
+        END;
+      `);
+    },
+  },
+
 ];

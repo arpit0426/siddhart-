@@ -109,23 +109,22 @@ export function recordInventoryEvent(input: {
   actorId?: string | null;
   note?: string;
 }): void {
-  const row = db
-    .prepare(`SELECT stock_quantity FROM inventory WHERE product_id = ?`)
-    .get(input.productId) as any;
-  db.prepare(
-    `INSERT INTO inventory_events (id, product_id, store_id, type, delta, resulting_stock, actor_id, note, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    randomId('ie'),
-    input.productId,
-    input.storeId,
-    input.type,
-    input.delta,
-    row?.stock_quantity ?? 0,
-    input.actorId ?? null,
-    input.note ?? null,
-    new Date().toISOString()
-  );
+  const row = db.prepare('SELECT stock_quantity,reserved_quantity FROM inventory WHERE product_id=?').get(input.productId) as any;
+  const recent = db.prepare(`SELECT id,stock_after,reserved_after,created_at FROM inventory_events
+    WHERE product_id=? AND actor_id IS NULL ORDER BY rowid DESC LIMIT 1`).get(input.productId) as any;
+  if (recent && recent.stock_after === row?.stock_quantity && recent.reserved_after === row?.reserved_quantity
+      && Date.parse(recent.created_at) >= Date.now() - 1000) {
+    db.prepare('UPDATE inventory_events SET type=?,delta=?,actor_id=?,note=? WHERE id=?')
+      .run(input.type, input.delta, input.actorId ?? null, input.note ?? null, recent.id);
+    return;
+  }
+  const isHold = input.type === 'reservation' || input.type === 'reservation_release';
+  db.prepare(`INSERT INTO inventory_events (id,product_id,store_id,type,delta,resulting_stock,actor_id,note,
+    reason,stock_before,stock_after,reserved_before,reserved_after,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomId('ie'),input.productId,input.storeId,input.type,input.delta,
+      row?.stock_quantity ?? 0,input.actorId ?? null,input.note ?? null,input.type,
+      row ? row.stock_quantity - (isHold ? 0 : input.delta) : null,row?.stock_quantity ?? null,
+      row ? row.reserved_quantity + (isHold ? input.delta : 0) : null,row?.reserved_quantity ?? null,new Date().toISOString());
 }
 
 /** Low-stock notice for the seller after stock drops below the threshold. */

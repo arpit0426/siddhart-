@@ -259,7 +259,7 @@ await suite.test('seller inventory: events recorded, negative stock refused, unp
   assert.equal(after.body.events[0].note, 'Restock');
 
   const created = await seller.post('/api/seller/products', {
-    name: 'Test Notebook A5', category: 'Stationery', price: 60, stock: 4, brand: 'Classmate', unit: '1pc', mrp: 70, sku: 'NB-A5',
+    name: 'Test Notebook A5', category: 'Stationery', price: 60, stock: 4, isPublished: true, brand: 'Classmate', unit: '1pc', mrp: 70, sku: 'NB-A5',
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const badMrp = await seller.put(`/api/seller/products/${created.body.product.id}`, { mrp: 10 });

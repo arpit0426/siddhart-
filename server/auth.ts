@@ -17,6 +17,8 @@ export interface AuthUser {
   phone: string | null;
   status: string;
   onboardingCompleted: number;
+  profile_image?: string | null;
+  created_at?: string;
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -58,16 +60,17 @@ export interface SessionResult {
 export function createSession(
   userId: string,
   role: Role,
-  meta: { userAgent?: string } = {}
+  meta: { userAgent?: string; remember?: boolean } = {}
 ): SessionResult {
   const token = crypto.randomBytes(32).toString('base64url');
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + config.sessionTtlDays * 24 * 60 * 60 * 1000);
+  const expiresAt = new Date(now.getTime() + (meta.remember === false ? 1 : config.sessionTtlDays) * 24 * 60 * 60 * 1000);
 
   db.prepare(
-    `INSERT INTO sessions (token_hash, user_id, role, user_agent, created_at, last_seen_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO sessions (id, token_hash, user_id, role, user_agent, created_at, last_seen_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
+    randomId('ses'),
     hashToken(token),
     userId,
     role,
@@ -101,7 +104,7 @@ export function getUserByToken(token: string): AuthUser | null {
 
   const row = db
     .prepare(
-      `SELECT u.id, u.role, u.name, u.email, u.phone, u.status, u.onboarding_completed, s.expires_at
+      `SELECT u.id, u.role, u.name, u.email, u.phone, u.status, u.onboarding_completed, s.expires_at, s.last_seen_at, u.profile_image, u.created_at
        FROM sessions s
        JOIN users u ON s.user_id = u.id
        WHERE s.token_hash = ?`
@@ -115,10 +118,13 @@ export function getUserByToken(token: string): AuthUser | null {
     return null;
   }
 
-  if (row.status !== 'active') {
+  if (row.status !== 'active' || (!config.demoMode && row.email.endsWith('.demo@nearbuy.app'))) {
     return null;
   }
 
+  if (Date.now() - Date.parse(row.last_seen_at) > 300_000) {
+    db.prepare('UPDATE sessions SET last_seen_at=? WHERE token_hash=?').run(new Date().toISOString(), hashToken(token));
+  }
   return {
     id: row.id,
     role: row.role,
@@ -127,6 +133,8 @@ export function getUserByToken(token: string): AuthUser | null {
     phone: row.phone,
     status: row.status,
     onboardingCompleted: row.onboarding_completed ?? 0,
+    profile_image: row.profile_image ?? null,
+    created_at: row.created_at,
   };
 }
 
@@ -351,6 +359,7 @@ export function publicUser(user: any) {
     licenseNumber: user.license_number ?? null,
     onboardingCompleted: Boolean(user.onboarding_completed),
     createdAt: user.created_at,
+    profileImage: user.profile_image ?? null,
   };
 }
 

@@ -69,10 +69,14 @@ function mount(path: string) {
     }
     throw new Error(`Timed out waiting for ${pattern} on ${window.location.pathname}. Page: "${text().slice(0, 300)}"`);
   };
-  const findButton = (label: RegExp) =>
-    Array.from(container.querySelectorAll('button, a')).find(
-      (el) => (label.test((el.textContent ?? '').trim()) || label.test(el.getAttribute('aria-label') ?? '')) && !(el as HTMLButtonElement).disabled
-    ) as HTMLElement | undefined;
+  const findButton = (label: RegExp) => {
+    const controls = [...container.querySelectorAll('button'), ...container.querySelectorAll('a')]
+      .filter((el) => !(el as HTMLButtonElement).disabled);
+    // Prefer the visible operation button over a shell shortcut with the same
+    // aria-label (the shortcut opens a separate confirmation dialog).
+    return (controls.find((el) => label.test((el.textContent ?? '').trim()))
+      ?? controls.find((el) => label.test(el.getAttribute('aria-label') ?? ''))) as HTMLElement | undefined;
+  };
   const click = async (label: RegExp) => {
     const start = Date.now();
     let el = findButton(label);
@@ -97,12 +101,30 @@ function mount(path: string) {
       input = find();
     }
     assert.ok(input, `field ${label} not found`);
+    // Happy DOM checks decimal steps with floating-point %, so a valid ₹42
+    // incorrectly fails step=0.01. Check paise precision explicitly here and
+    // let the normal required/min/max and server validators enforce the rest.
+    if (input!.type === 'number' && input!.step === '0.01') {
+      const paise = Number(value) * 100;
+      assert.ok(Math.abs(paise - Math.round(paise)) < 1e-7, 'money input must use whole paise');
+      input!.step = 'any';
+    }
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
     setter.call(input, value);
     input!.dispatchEvent(new window.Event('input', { bubbles: true }));
     await sleep(40);
   };
-  return { text, waitFor, click, type, unmount: () => { root.unmount(); container.remove(); } };
+  const select = async (label: RegExp, value: string) => {
+    const l = Array.from(container.querySelectorAll('label')).find((x) => label.test(x.textContent ?? ''));
+    const id = l?.getAttribute('for');
+    const field = (id ? container.querySelector(`#${CSS.escape(id)}`) : l?.querySelector('select')) as HTMLSelectElement | null;
+    assert.ok(field, `select ${label} not found`);
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')!.set!;
+    setter.call(field, value);
+    field!.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await sleep(60);
+  };
+  return { text, waitFor, click, type, select, unmount: () => { root.unmount(); container.remove(); } };
 }
 
 let orderId = '';
@@ -145,6 +167,7 @@ await suite.test('seller: accepts, prepares, packs and readies the order through
   await app.waitFor(/Ready for pickup/);
   assert.doesNotMatch(app.text(), /PK-\d{4}/, 'pickup code is hidden until ready');
   await app.click(/^Ready for pickup$/);
+  await app.click(/^Reveal$/);
   await app.waitFor(/PK-\d{4}/);
   pickupCode = /PK-\d{4}/.exec(app.text())![0];
   assert.doesNotMatch(app.text(), /DL-\d{4}/, 'seller UI never shows the delivery code');
@@ -225,10 +248,10 @@ await suite.test('seller UI: adds a product, adjusts stock, closes and reopens t
   const editor = mount('/seller/products/new');
   await editor.waitFor(/Add a product/);
   await editor.type(/Product name/, name);
-  await editor.type(/Price/, '42');
-  await editor.type(/Stock quantity/, '12');
+  await editor.type(/Selling price/, '42');
+  await editor.type(/Initial stock/, '12');
   await editor.type(/Brand/, 'UIBrand');
-  await editor.click(/^Publish product$/);
+  await editor.click(/^Save & publish$/);
   await editor.waitFor(new RegExp(name));
   editor.unmount();
 
@@ -241,21 +264,29 @@ await suite.test('seller UI: adds a product, adjusts stock, closes and reopens t
 
   const inventory = mount('/seller/inventory');
   await inventory.waitFor(new RegExp(name));
-  const row = Array.from(document.querySelectorAll('tr')).find((tr) => (tr.textContent ?? '').includes(name))!;
-  (Array.from(row.querySelectorAll('button')).find((b) => /Adjust/.test(b.textContent ?? '')) as HTMLElement).click();
-  await inventory.waitFor(/Set exact count/);
+  const openAdjustment = async () => {
+    const row = Array.from(document.querySelectorAll('tr')).find((tr) => (tr.textContent ?? '').includes(name))!;
+    (Array.from(row.querySelectorAll('button')).find((b) => /Update|Restock/.test(b.textContent ?? '')) as HTMLElement).click();
+    await inventory.waitFor(/Update stock/);
+    await sleep(150); // wait for the versioned inventory snapshot, not just the modal title
+  };
+  await openAdjustment();
+  await inventory.select(/Adjustment type/, 'set');
   await inventory.type(/New shelf quantity/, '30');
-  await inventory.click(/^Save stock$/);
-  await inventory.waitFor(/Stock activity/);
-  await inventory.waitFor(/seller adjustment/);
+  await inventory.type(/Adjustment note/, 'UI test restock');
+  await inventory.click(/^Save stock update$/);
+  await inventory.waitFor(/Stock updated/);
+  assert.equal((await seller.get(`/api/seller/products/${productId}`)).body.product.stock_quantity, 30);
+  await openAdjustment();
+  await inventory.click(/View recent inventory events/);
+  await inventory.waitFor(/UI test restock/);
   inventory.unmount();
-  assert.equal((await seller.get(`/api/seller/inventory`)).body.inventory.find((p: any) => p.id === productId).stock_quantity, 30);
 
   await customerApi.post('/api/customer/cart/items', { productId, quantity: 1 });
   const store = mount('/seller/store');
-  await store.waitFor(/Store status/);
+  await store.waitFor(/Store visibility/);
   await store.click(/^Close store$/);
-  await store.waitFor(/Closed — customers can browse/);
+  await store.waitFor(/New checkout is paused/);
   store.unmount();
   const addresses = await customerApi.get('/api/customer/addresses');
   const blocked = await customerApi.post('/api/customer/checkout', {
@@ -266,7 +297,7 @@ await suite.test('seller UI: adds a product, adjusts stock, closes and reopens t
 
   const reopen = mount('/seller/store');
   await reopen.click(/^Open store$/);
-  await reopen.waitFor(/Open — customers can place new orders/);
+  await reopen.waitFor(/Your store is open/);
   reopen.unmount();
 });
 
@@ -300,17 +331,19 @@ await suite.test('requests UI: stock check never holds stock, a confirmed reserv
   product.unmount();
 
   await signIn('seller');
-  const requests = mount('/seller/requests');
+  const requests = mount('/seller/stock-requests');
   await requests.waitFor(/Confirm available/);
   await requests.click(/Confirm available/);
   await requests.click(/^Send response$/);
   await sleep(500);
   assert.equal(await held(), before, 'confirming a stock check does not reserve stock');
-  await requests.click(/Confirm & hold stock/);
-  await requests.click(/^Send response$/);
+  requests.unmount();
+  const reservations = mount('/seller/reservations');
+  await reservations.click(/Confirm & reserve stock/);
+  await reservations.click(/^Confirm response$/);
   await sleep(500);
   assert.ok((await held()) > before, 'a confirmed reservation holds units');
-  requests.unmount();
+  reservations.unmount();
 
   await signIn('customer');
   const mine = mount('/requests');

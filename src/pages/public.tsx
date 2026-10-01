@@ -328,17 +328,18 @@ export const ProductCard: React.FC<{
   quantityInCart: number;
   adding?: boolean;
   onAdd: () => void;
-}> = ({ product, quantityInCart, adding, onAdd }) => {
+  preview?: boolean;
+}> = ({ product, quantityInCart, adding, onAdd, preview = false }) => {
   const outOfStock = product.availabilityState
     ? product.availabilityState === 'out_of_stock'
     : (product.stock ?? 0) <= 0;
-  const { isSaved, toggle } = useSaved();
+  const { isSaved, toggle } = useSaved(!preview);
   const toast = useToast();
   const saved = isSaved(product.id);
 
   return (
     <Card className="relative flex flex-col overflow-hidden">
-      <button
+      {!preview && <button
         type="button"
         aria-label={saved ? `Remove ${product.name} from saved items` : `Save ${product.name}`}
         aria-pressed={saved}
@@ -348,7 +349,7 @@ export const ProductCard: React.FC<{
         className="absolute left-2 top-2 z-10 rounded-full bg-white/95 p-1.5 shadow-sm hover:bg-white"
       >
         <Heart className={`h-4 w-4 ${saved ? 'fill-red-500 text-red-500' : 'text-slate-500'}`} aria-hidden="true" />
-      </button>
+      </button>}
       <Link to={`/products/${product.id}`} className="block">
         <div className="relative aspect-[4/3] bg-slate-100">
           {product.image ? (
@@ -400,12 +401,12 @@ export const ProductCard: React.FC<{
           </div>
           <Button
             className="mt-3 w-full"
-            disabled={outOfStock}
+            disabled={preview || outOfStock}
             loading={adding}
             onClick={onAdd}
             aria-label={`Add ${product.name} to cart`}
           >
-            {quantityInCart > 0 ? `Add another (${quantityInCart} in cart)` : 'Add to cart'}
+            {preview ? 'Preview only' : quantityInCart > 0 ? `Add another (${quantityInCart} in cart)` : 'Add to cart'}
           </Button>
         </div>
       </div>
@@ -463,8 +464,8 @@ export const StoreCard: React.FC<{ store: Store }> = ({ store }) => (
 /* Store detail                                                               */
 /* -------------------------------------------------------------------------- */
 
-export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
-  const { user } = useAuth();
+export const StoreDetailPage: React.FC<{ storeId: string; preview?: boolean }> = ({ storeId, preview = false }) => {
+  const { user, config } = useAuth();
   const { cart, updateItem } = useCart();
   const toast = useToast();
   const [addingId, setAddingId] = useState<string | null>(null);
@@ -483,12 +484,12 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
         hasMore: boolean;
         categories: { category: string; count: number }[];
       }>(
-        `/api/customer/stores/${storeId}?${new URLSearchParams({
+        `${preview ? '/api/seller/store/preview' : `/api/customer/stores/${storeId}`}?${new URLSearchParams({
           ...(categoryFilter ? { category: categoryFilter } : {}),
           ...geo,
         }).toString()}`
       ),
-    [storeId, categoryFilter, geo.lat, geo.lng]
+    [storeId, preview, categoryFilter, geo.lat, geo.lng]
   );
 
   useEffect(() => {
@@ -506,7 +507,9 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
   if (resource.error) return <ErrorNote>{resource.error}</ErrorNote>;
   if (!resource.data) return null;
 
-  const { store, total, categories } = resource.data;
+  const { store } = resource.data;
+  const total = resource.data.total ?? resource.data.products.length;
+  const categories = resource.data.categories ?? [];
   const products = [...resource.data.products, ...more];
   const hasMore = products.length < total;
 
@@ -514,7 +517,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
     setLoadingMore(true);
     try {
       const next = await api.get<{ products: Product[] }>(
-        `/api/customer/stores/${storeId}?${new URLSearchParams({
+        `${preview ? '/api/seller/store/preview' : `/api/customer/stores/${storeId}`}?${new URLSearchParams({
           page: String(page + 1),
           ...(categoryFilter ? { category: categoryFilter } : {}),
         }).toString()}`
@@ -529,6 +532,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
   };
 
   const add = async (product: Product) => {
+    if (preview) return;
     if (!user) {
       navigate(`/customer/auth?next=${encodeURIComponent(`/stores/${storeId}`)}`);
       return;
@@ -546,7 +550,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
 
   return (
     <div className="space-y-6">
-      <nav aria-label="Breadcrumb" className="text-xs text-slate-500">
+      {!preview && <nav aria-label="Breadcrumb" className="text-xs text-slate-500">
         <Link to="/customer" className="hover:text-slate-800">
           Discover
         </Link>
@@ -556,7 +560,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
         </Link>
         <span className="mx-1.5">/</span>
         <span className="font-medium text-slate-700">{store.name}</span>
-      </nav>
+      </nav>}
 
       <Card className="overflow-hidden">
         <div className="grid gap-4 sm:grid-cols-[220px_1fr]">
@@ -604,7 +608,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
             )}
             <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
               {store.supports_delivery ? (
-                <Badge tone="success">Home delivery · ₹30 flat</Badge>
+                <Badge tone="success">Home delivery · {formatINR(config?.deliveryFeePerStore ?? 30)} per order</Badge>
               ) : (
                 <Badge tone="neutral">Pickup only</Badge>
               )}
@@ -646,6 +650,7 @@ export const StoreDetailPage: React.FC<{ storeId: string }> = ({ storeId }) => {
               quantityInCart={cartQuantities.get(product.id) ?? 0}
               adding={addingId === product.id}
               onAdd={() => add(product)}
+              preview={preview}
             />
           ))}
         </div>

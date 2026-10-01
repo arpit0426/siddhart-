@@ -71,11 +71,11 @@ export const ROLE_META: Record<Role, RoleMeta> = {
     description: 'Manage your local store',
     chipLabel: 'For local stores',
     icon: <StoreIcon className="h-5 w-5" aria-hidden="true" />,
-    chip: 'bg-violet-600',
-    soft: 'bg-violet-50 text-violet-700',
+    chip: 'bg-blue-600',
+    soft: 'bg-blue-50 text-blue-700',
     ring: 'group-hover:border-violet-300 group-hover:shadow-violet-900/10',
-    loginTitle: 'Seller login',
-    loginSubtitle: 'Sign in to manage your store, catalogue, stock and incoming orders.',
+    loginTitle: 'NearBuy Seller',
+    loginSubtitle: 'Manage your store. Reach nearby customers.',
     signupCta: 'Create Seller Account',
     demoName: 'Rahul Verma',
   },
@@ -462,6 +462,8 @@ export const AuthGatewayPage: React.FC = () => {
 /* Role login (/customer/auth, /seller/auth, /rider/auth)                      */
 /* -------------------------------------------------------------------------- */
 
+const SellerAuthTabs: React.FC<{ active: 'auth' | 'signup' | 'recover' }> = ({ active }) => <nav aria-label="Seller authentication" className="mt-5 flex border-b border-slate-200 text-xs">{[{ key: 'auth', title: 'Login' }, { key: 'signup', title: 'Sign Up' }, { key: 'recover', title: 'Recover Account' }].map((t) => <Link key={t.key} to={`/seller/${t.key}`} aria-current={active === t.key ? 'page' : undefined} className={`flex-1 border-b-2 py-3 text-center font-semibold ${active === t.key ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-blue-700'}`}>{t.title}</Link>)}</nav>;
+
 export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
   const params = useQueryParams();
   const { login, config, user } = useAuth();
@@ -471,6 +473,7 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(() => consumeSessionNotice());
+  const [remember, setRemember] = useState(true);
   const meta = ROLE_META[role];
   const next = safeNext(params.get('next'), role);
 
@@ -490,7 +493,7 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
     setError(null);
     setLoading(true);
     try {
-      const signedIn = await login({ email, password: pass, role });
+      const signedIn = await login({ email, password: pass, role, remember });
       toast.push({ title: `Welcome back, ${signedIn.name.split(' ')[0]}`, tone: 'success' });
       navigate(safeNext(next, signedIn.role), { replace: true });
     } catch (caught) {
@@ -536,6 +539,7 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
             </div>
           </div>
           <p className="mt-3 text-sm text-slate-600">{meta.loginSubtitle}</p>
+          {role === 'seller' && <SellerAuthTabs active="auth" />}
 
           <form
             className="mt-6 space-y-4"
@@ -568,6 +572,7 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
               placeholder="••••••••"
             />
 
+            {role === 'seller' && <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="h-4 w-4 accent-blue-600" />Remember this session on this device</label>}
             <Button type="submit" size="lg" className="w-full" loading={loading}>
               <Lock className="h-4 w-4" aria-hidden="true" />
               {loading ? 'Signing in…' : 'Login'}
@@ -799,6 +804,7 @@ export const RoleSignupPage: React.FC<{ role: Role }> = ({ role }) => {
             </div>
           </div>
 
+          {role === 'seller' && <SellerAuthTabs active="signup" />}
           <form className="mt-6 space-y-4" onSubmit={submit}>
             {error && <ErrorNote>{error}</ErrorNote>}
 
@@ -1107,6 +1113,7 @@ export const RoleRecoverPage: React.FC<{ role: Role }> = ({ role }) => {
             </div>
           </div>
 
+          {role === 'seller' && <SellerAuthTabs active="recover" />}
           {resetDone ? (
             <div className="mt-6 space-y-4">
               <SuccessNote>Your password has been updated successfully.</SuccessNote>

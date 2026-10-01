@@ -98,11 +98,11 @@ customerPortalRouter.get(
     const row = db
       .prepare(
         `SELECT s.id, s.name, s.description, s.category, s.address, s.city, s.state, s.pincode, s.latitude, s.longitude,
-                s.opening_hours, s.opens_at, s.closes_at, s.operating_days, s.contact_phone, s.status, s.closure_type,
+                s.opening_hours, s.opens_at, s.closes_at, s.operating_days, s.contact_phone, s.contact_email, s.is_published, s.temporarily_unavailable, s.status, s.closure_type,
                 s.status_message, s.image, s.logo, s.supports_delivery, s.supports_pickup, s.supports_reservations,
                 s.fulfilment_min_minutes, s.fulfilment_max_minutes, s.published_at,
                 (SELECT COUNT(*) FROM products p WHERE p.store_id = s.id AND p.is_published = 1) AS product_count
-         FROM stores s WHERE s.id = ? AND s.status != 'inactive' AND s.published_at IS NOT NULL`
+         FROM stores s WHERE s.id = ? AND s.status != 'inactive' AND s.is_published=1 AND s.published_at IS NOT NULL`
       )
       .get(req.params.id) as any;
     if (!row) throw ApiError.notFound('Store not found.');
@@ -140,8 +140,8 @@ customerPortalRouter.get(
     const row = db
       .prepare(
         `SELECT p.id, p.store_id, p.name, p.description, p.category, p.image, p.price, p.mrp, p.brand, p.unit, p.sku,
-                p.availability, p.product_info, p.extra_images, p.is_published, p.created_at, p.updated_at,
-                s.name AS store_name, s.address AS store_address, s.city AS store_city, s.status AS store_status,
+                p.availability, p.product_info, p.additional_images AS extra_images, p.is_published, p.created_at, p.updated_at,
+                s.name AS store_name, s.address AS store_address, s.city AS store_city, CASE WHEN s.is_published=0 THEN 'inactive' WHEN s.temporarily_unavailable=1 THEN 'closed' ELSE s.status END AS store_status,
                 s.closure_type, s.opening_hours, s.supports_delivery, s.supports_pickup, s.supports_reservations,
                 s.image AS store_image, s.published_at,
                 i.stock_quantity, i.reserved_quantity, i.low_stock_threshold,
@@ -149,7 +149,7 @@ customerPortalRouter.get(
          FROM products p
          JOIN stores s ON p.store_id = s.id
          JOIN inventory i ON i.product_id = p.id
-         WHERE p.id = ? AND s.status != 'inactive' AND s.published_at IS NOT NULL`
+         WHERE p.id = ? AND s.status != 'inactive' AND s.is_published=1 AND s.published_at IS NOT NULL`
       )
       .get(req.params.id) as any;
     if (!row || !row.is_published) throw ApiError.notFound('Product not found.');
@@ -294,7 +294,7 @@ customerPortalRouter.get(
       .prepare(
         `SELECT p.id, p.store_id, p.name, p.description, p.category, p.image, p.price, p.brand, p.unit,
                 p.availability, p.is_published, si.created_at AS saved_at,
-                s.name AS store_name, s.status AS store_status, s.city AS store_city,
+                s.name AS store_name, CASE WHEN s.is_published=0 THEN 'inactive' WHEN s.temporarily_unavailable=1 THEN 'closed' ELSE s.status END AS store_status, s.city AS store_city,
                 i.low_stock_threshold, (i.stock_quantity - i.reserved_quantity) AS stock
          FROM saved_items si
          JOIN products p ON p.id = si.product_id
@@ -314,7 +314,7 @@ customerPortalRouter.post(
     const exists = db
       .prepare(
         `SELECT p.id FROM products p JOIN stores s ON s.id = p.store_id
-         WHERE p.id = ? AND p.is_published = 1 AND s.status != 'inactive' AND s.published_at IS NOT NULL`
+         WHERE p.id = ? AND p.is_published = 1 AND s.status != 'inactive' AND s.is_published=1 AND s.published_at IS NOT NULL`
       )
       .get(productId);
     if (!exists) throw ApiError.notFound('Product not found.');
@@ -376,7 +376,7 @@ customerPortalRouter.post(
     for (const item of items) {
       const live = db
         .prepare(
-          `SELECT p.id, p.name, p.price, p.is_published, p.availability, s.status AS store_status, s.published_at,
+          `SELECT p.id, p.name, p.price, p.is_published, p.availability, CASE WHEN s.is_published=0 THEN 'inactive' WHEN s.temporarily_unavailable=1 THEN 'closed' ELSE s.status END AS store_status, s.published_at,
                   (i.stock_quantity - i.reserved_quantity) AS stock
            FROM products p JOIN stores s ON s.id = p.store_id JOIN inventory i ON i.product_id = p.id
            WHERE p.id = ?`

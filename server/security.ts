@@ -149,13 +149,12 @@ function cookieAttributeList(secure: boolean): string[] {
   return ['HttpOnly', 'SameSite=Lax'];
 }
 
-export function setSessionCookie(res: Response, token: string, expiresAt: Date, req?: Request) {
+export function setSessionCookie(res: Response, token: string, expiresAt: Date, req?: Request, remember = true) {
   const parts = [
     `${config.sessionCookieName}=${encodeURIComponent(token)}`,
     'Path=/',
     ...cookieAttributeList(requestIsHttps(req)),
-    `Expires=${expiresAt.toUTCString()}`,
-    `Max-Age=${Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000))}`,
+    ...(remember ? [`Expires=${expiresAt.toUTCString()}`, `Max-Age=${Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000))}`] : []),
   ];
   res.append('Set-Cookie', parts.join('; '));
 }

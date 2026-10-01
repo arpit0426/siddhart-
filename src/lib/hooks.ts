@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { errorMessage } from './api';
 
-interface ResourceState<T> {
+export interface ResourceState<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
@@ -9,90 +9,56 @@ interface ResourceState<T> {
   setData: React.Dispatch<React.SetStateAction<T | null>>;
 }
 
-/**
- * Data fetching with loading/error/empty states and optional polling.
- * Polling pauses while the tab is hidden so background tabs stay cheap.
- */
-export function useApiResource<T>(
-  loader: () => Promise<T>,
-  deps: unknown[],
-  options: { pollMs?: number; enabled?: boolean } = {}
-): ResourceState<T> {
-  const { pollMs, enabled = true } = options;
+/** Late responses never overwrite newer filters/actions. Polling is suspended
+ * in hidden tabs, and failed background refreshes retain the last server state. */
+export function useApiResource<T>(loader: () => Promise<T>, deps: unknown[], options: { pollMs?: number; enabled?: boolean; refreshEvent?: string } = {}): ResourceState<T> {
+  const { pollMs, enabled = true, refreshEvent } = options;
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
-  const loaderRef = useRef(loader);
-  loaderRef.current = loader;
-
-  const reload = useCallback(() => setNonce((value) => value + 1), []);
+  const loaderRef = useRef(loader); loaderRef.current = loader;
+  const requestId = useRef(0);
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
 
   useEffect(() => {
-    if (!enabled) {
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    loaderRef
-      .current()
-      .then((result) => {
-        if (cancelled) return;
-        setData(result);
-        setError(null);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        if ((err as any)?.name === 'AbortError') return;
-        setError(errorMessage(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
+    if (!enabled) { setLoading(false); return; }
+    let alive = true;
+    let inFlight = false;
+    const load = async (background = false) => {
+      if (background && inFlight) return;
+      const id = ++requestId.current;
+      inFlight = true;
+      if (!background) setLoading(true);
+      try {
+        const result = await loaderRef.current();
+        if (alive && id === requestId.current) { setData(result); setError(null); }
+      } catch (err) {
+        if (alive && id === requestId.current && (err as any)?.name !== 'AbortError' && !background) setError(errorMessage(err));
+      } finally {
+        if (alive && id === requestId.current) { inFlight = false; setLoading(false); }
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, nonce, enabled]);
-
-  useEffect(() => {
-    if (!pollMs || !enabled) return;
-    const interval = window.setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      loaderRef
-        .current()
-        .then((result) => {
-          setData(result);
-          setError(null);
-        })
-        .catch(() => {
-          /* keep the last good data on background refresh failures */
-        });
-    }, pollMs);
-    return () => window.clearInterval(interval);
-  }, [pollMs, enabled]);
-
-  useEffect(() => {
-    const onFocus = () => {
-      if (!enabled) return;
-      loaderRef
-        .current()
-        .then((result) => setData(result))
-        .catch(() => undefined);
-    };
+    load();
+    const refresh = () => load();
+    const onFocus = () => { if (document.visibilityState !== 'hidden') load(true); };
+    const interval = pollMs ? window.setInterval(onFocus, pollMs) : undefined;
     window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [enabled]);
-
+    document.addEventListener('visibilitychange', onFocus);
+    if (refreshEvent) window.addEventListener(refreshEvent, refresh);
+    return () => {
+      alive = false; requestId.current += 1;
+      if (interval) window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+      if (refreshEvent) window.removeEventListener(refreshEvent, refresh);
+    };
+  }, [...deps, nonce, enabled, pollMs, refreshEvent]);
   return { data, loading, error, reload, setData };
 }
 
 export function useDebouncedValue<T>(value: T, delayMs = 300): T {
   const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timeout = window.setTimeout(() => setDebounced(value), delayMs);
-    return () => window.clearTimeout(timeout);
-  }, [value, delayMs]);
+  useEffect(() => { const t = window.setTimeout(() => setDebounced(value), delayMs); return () => window.clearTimeout(t); }, [value, delayMs]);
   return debounced;
 }

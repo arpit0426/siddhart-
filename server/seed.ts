@@ -376,29 +376,7 @@ function ensureUser(input: {
   const { hash, salt } = hashPassword(DEMO_PASSWORD);
 
   if (existing) {
-    db.prepare(
-      `UPDATE users SET role = ?, name = ?, phone = ?,
-         password_hash = ?, password_salt = ?, status = 'active',
-         failed_login_attempts = 0, locked_until = NULL,
-         vehicle_type = COALESCE(?, vehicle_type),
-         vehicle_number = COALESCE(?, vehicle_number),
-         license_number = COALESCE(?, license_number),
-         onboarding_completed = COALESCE(?, onboarding_completed),
-         updated_at = ?
-       WHERE email = ?`
-    ).run(
-      input.role,
-      input.name,
-      input.phone,
-      hash,
-      salt,
-      input.extra?.vehicleType ?? null,
-      input.extra?.vehicleNumber ?? null,
-      input.extra?.licenseNumber ?? null,
-      input.extra?.onboardingCompleted ?? null,
-      now,
-      input.email
-    );
+    // A server restart must not reset passwords, profiles, hours or visibility.
     return { id: existing.id, created: false };
   }
 
@@ -434,33 +412,7 @@ function ensureStore(store: SeedStore): { id: string; created: boolean } {
   const openingHours = `${store.opensAt} - ${store.closesAt} (${store.operatingDays})`;
 
   if (existing) {
-    db.prepare(
-      `UPDATE stores SET name = ?, description = ?, category = ?, address = ?, city = ?, state = ?,
-         pincode = ?, latitude = ?, longitude = ?, opening_hours = ?, opens_at = ?, closes_at = ?,
-         operating_days = ?, contact_phone = ?, status = ?, image = ?, supports_delivery = 1, supports_pickup = 1,
-         published_at = COALESCE(published_at, ?), updated_at = ?
-       WHERE id = ?`
-    ).run(
-      store.name,
-      store.description,
-      store.category,
-      store.address,
-      store.city,
-      store.state,
-      store.pincode,
-      store.latitude,
-      store.longitude,
-      openingHours,
-      store.opensAt,
-      store.closesAt,
-      store.operatingDays,
-      store.ownerPhone,
-      store.status,
-      store.image,
-      now,
-      now,
-      existing.id
-    );
+    // A server restart must not reset passwords, profiles, hours or visibility.
     return { id: existing.id, created: false };
   }
 
@@ -512,23 +464,11 @@ function ensureProduct(storeId: string, product: SeedProduct): { id: string; cre
     .get(product.key, storeId, product.name) as any;
 
   if (existing) {
-    db.prepare(
-      `UPDATE products SET name = ?, description = ?, category = ?, image = ?, price = ?, is_published = 1, updated_at = ?
-       WHERE id = ?`
-    ).run(product.name, product.description, product.category, product.image, product.price, now, existing.id);
-    db.prepare(
-      `UPDATE products SET brand = COALESCE(brand, ?), unit = COALESCE(unit, ?), sku = COALESCE(sku, ?) WHERE id = ?`
-    ).run(meta.brand, meta.unit, meta.sku, existing.id);
-
-    // Seed stock is applied only to fresh inventory rows so a running demo that
-    // has already sold units is not silently reset.
-    const inventory = db.prepare(`SELECT id FROM inventory WHERE product_id = ?`).get(existing.id) as any;
+    // Preserve seller edits, stock, publication and prices across restarts.
+    const inventory = db.prepare('SELECT id FROM inventory WHERE product_id=?').get(existing.id);
     if (!inventory) {
-      db.prepare(
-        `INSERT INTO inventory (id, product_id, stock_quantity, reserved_quantity, low_stock_threshold, updated_at)
-         VALUES (?, ?, ?, 0, 5, ?)`
-      ).run(`inv_${existing.id}`, existing.id, product.stock, now);
-      db.prepare(`UPDATE products SET stock = ? WHERE id = ?`).run(product.stock, existing.id);
+      db.prepare(`INSERT INTO inventory (id,product_id,stock_quantity,reserved_quantity,low_stock_threshold,updated_at)
+        SELECT ?,id,MAX(0,stock),0,5,? FROM products WHERE id=?`).run(`inv_${existing.id}`, now, existing.id);
     }
     return { id: existing.id, created: false };
   }

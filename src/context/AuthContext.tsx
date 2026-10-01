@@ -14,7 +14,7 @@ interface AuthContextValue {
   user: User | null;
   config: AppConfig | null;
   loading: boolean;
-  login: (input: { email: string; password: string; role?: Role }) => Promise<User>;
+  login: (input: { email: string; password: string; role?: Role; remember?: boolean }) => Promise<User>;
   register: (input: {
     role: Role;
     name: string;
@@ -97,11 +97,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = useCallback(
-    async ({ email, password, role }: { email: string; password: string; role?: Role }) => {
+    async ({ email, password, role, remember }: { email: string; password: string; role?: Role; remember?: boolean }) => {
       const data = await api.post<{ user: User }>('/api/auth/login', {
         email,
         password,
         expectedRole: role,
+        remember,
       });
       // Fresh workspace: never carry another session's saved-items cache across login.
       resetSavedCache();
@@ -147,11 +148,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await api.post('/api/auth/logout');
     } catch (error) {
-      if (!(error instanceof ApiRequestError)) throw error;
-    } finally {
-      setSessionToken(null);
-      setUser(null);
+      // An already-expired server session is logged out; other failures must
+      // remain visible rather than pretending the server revoked the session.
+      if (!(error instanceof ApiRequestError) || error.status !== 401) throw error;
     }
+    setSessionToken(null);
+    resetSavedCache();
+    setUser(null);
   }, []);
 
   const value = useMemo(

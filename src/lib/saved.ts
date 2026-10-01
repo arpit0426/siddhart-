@@ -33,16 +33,17 @@ export function resetSavedCache() {
   emit();
 }
 
-export function useSaved() {
+export function useSaved(enabled = true) {
   const [, force] = useState(0);
   useEffect(() => {
+    if (!enabled) return;
     const listener = () => force((n) => n + 1);
     listeners.add(listener);
     if (cache === null) void load();
     return () => {
       listeners.delete(listener);
     };
-  }, []);
+  }, [enabled]);
 
   const toggle = useCallback(async (productId: string) => {
     const wasSaved = cache?.has(productId) ?? false;

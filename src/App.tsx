@@ -4,7 +4,6 @@ import { AuthProvider, useAuth, roleHome } from './context/AuthContext';
 import { CartProvider, useCart } from './context/CartContext';
 import { AppShell } from './components/layout/AppShell';
 import { SellerShell } from './components/layout/SellerShell';
-import { Spinner } from './components/ui';
 import { RequireRole } from './components/RequireRole';
 import { matchPath, navigate, useRoutePath } from './lib/router';
 import {
@@ -35,12 +34,13 @@ import {
   SellerOrderDetailPage,
   SellerOrdersPage,
   SellerPerformancePage,
-  SellerEarningsPage,
   SellerProductsPage,
   SellerRequestsPage,
   SellerStorePage,
+  SellerStorePreviewPage, SellerBusinessPage, SellerEarningsPage,
+  SellerStockRequestsPage, SellerReservationsPage, SellerNotificationsPage, SellerSupportPage,
+  SellerProfilePage, SellerSettingsPage, SellerSecurityPage,
 } from './pages/seller';
-import { SellerBusinessPage, SellerProfilePage, SellerSettingsPage } from './pages/sellerAccount';
 import {
   RiderActivePage,
   RiderDashboardPage,
@@ -79,7 +79,7 @@ function resolveRoute(path: string): RouteMatch {
 
   // Shared account pages for every role.
   const accountMatch = matchPath('/:role/:page', pathname);
-  if (accountMatch && ROLES.includes(accountMatch.role as Role)) {
+  if (accountMatch && accountMatch.role !== 'seller' && ROLES.includes(accountMatch.role as Role)) {
     const role = accountMatch.role as Role;
     const pages: Record<string, React.ReactNode> = {
       notifications: <NotificationsPage role={role} />,
@@ -207,145 +207,36 @@ function resolveRoute(path: string): RouteMatch {
   }
 
   /* ------------------------------ Seller -------------------------------- */
-  if (pathname === '/seller') {
-    return {
-      key: 'seller-redirect',
-      element: (
-        <Redirect to="/seller/dashboard">
-          <RequireRole role="seller">
-            <SellerDashboardPage />
-          </RequireRole>
-        </Redirect>
-      ),
-    };
-  }
-  if (pathname === '/seller/dashboard') {
-    return {
-      key: 'seller',
-      element: (
-        <RequireRole role="seller">
-          <SellerDashboardPage />
-        </RequireRole>
-      ),
-    };
-  }
-  {
-    const sellerOnly = (key: string, element: React.ReactNode): RouteMatch => ({
-      key,
-      element: <RequireRole role="seller">{element}</RequireRole>,
-    });
-    if (pathname === '/seller/stock-requests') return sellerOnly('seller-stock-requests', <SellerRequestsPage view="stock" />);
-    if (pathname === '/seller/reservations') return sellerOnly('seller-reservations', <SellerRequestsPage view="reservations" />);
-    if (pathname === '/seller/analytics') return sellerOnly('seller-analytics', <SellerPerformancePage />);
-    if (pathname === '/seller/profile') return sellerOnly('seller-profile', <SellerProfilePage />);
-    if (pathname === '/seller/business') return sellerOnly('seller-business', <SellerBusinessPage />);
-    if (pathname === '/seller/settings') return sellerOnly('seller-settings', <SellerSettingsPage />);
-    if (pathname === '/seller/settings/security') {
-      return sellerOnly('seller-settings-security', <SecuritySettingsPage role="seller" />);
-    }
-  }
-  if (pathname === '/seller/orders') {
-    return {
-      key: 'seller-orders',
-      element: (
-        <RequireRole role="seller">
-          <SellerOrdersPage />
-        </RequireRole>
-      ),
-    };
-  }
+  const sellerPages: Record<string, React.ReactNode> = {
+    '/seller': <SellerDashboardPage />,
+    '/seller/dashboard': <SellerDashboardPage />,
+    '/seller/orders': <SellerOrdersPage />,
+    '/seller/products': <SellerProductsPage />,
+    '/seller/products/new': <ProductEditorPage />,
+    '/seller/inventory': <SellerInventoryPage />,
+    '/seller/requests': <SellerStockRequestsPage />,
+    '/seller/stock-requests': <SellerStockRequestsPage />,
+    '/seller/reservations': <SellerReservationsPage />,
+    '/seller/store': <SellerStorePage />,
+    '/seller/store/hours': <SellerStorePage section="hours" />,
+    '/seller/store/location': <SellerStorePage section="location" />,
+    '/seller/store/preview': <SellerStorePreviewPage />,
+    '/seller/business': <SellerBusinessPage />,
+    '/seller/performance': <SellerPerformancePage />,
+    '/seller/analytics': <SellerPerformancePage />,
+    '/seller/earnings': <SellerEarningsPage />,
+    '/seller/notifications': <SellerNotificationsPage />,
+    '/seller/support': <SellerSupportPage />,
+    '/seller/profile': <SellerProfilePage />,
+    '/seller/settings': <SellerSettingsPage />,
+    '/seller/settings/security': <SellerSecurityPage />,
+    '/seller/security': <SellerSecurityPage />,
+  };
+  if (sellerPages[pathname]) return { key: pathname.startsWith('/seller/store') && pathname !== '/seller/store/preview' ? 'seller-store' : pathname, element: <RequireRole role="seller">{sellerPages[pathname]}</RequireRole> };
   const sellerOrderMatch = matchPath('/seller/orders/:id', pathname);
-  if (sellerOrderMatch) {
-    return {
-      key: `seller-order-${sellerOrderMatch.id}`,
-      element: (
-        <RequireRole role="seller">
-          <SellerOrderDetailPage orderId={sellerOrderMatch.id} />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/products') {
-    return {
-      key: 'seller-products',
-      element: (
-        <RequireRole role="seller">
-          <SellerProductsPage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/products/new') {
-    return {
-      key: 'seller-product-new',
-      element: (
-        <RequireRole role="seller">
-          <ProductEditorPage />
-        </RequireRole>
-      ),
-    };
-  }
+  if (sellerOrderMatch) return { key: `seller-order-${sellerOrderMatch.id}`, element: <RequireRole role="seller"><SellerOrderDetailPage orderId={sellerOrderMatch.id} /></RequireRole> };
   const sellerProductMatch = matchPath('/seller/products/:id', pathname);
-  if (sellerProductMatch) {
-    return {
-      key: `seller-product-${sellerProductMatch.id}`,
-      element: (
-        <RequireRole role="seller">
-          <ProductEditorPage productId={sellerProductMatch.id} />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/inventory') {
-    return {
-      key: 'seller-inventory',
-      element: (
-        <RequireRole role="seller">
-          <SellerInventoryPage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/requests') {
-    return {
-      key: 'seller-requests',
-      element: (
-        <RequireRole role="seller">
-          <SellerRequestsPage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/store') {
-    return {
-      key: 'seller-store',
-      element: (
-        <RequireRole role="seller">
-          <SellerStorePage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/earnings') {
-    return {
-      key: 'seller-earnings',
-      element: (
-        <RequireRole role="seller">
-          <SellerEarningsPage />
-        </RequireRole>
-      ),
-    };
-  }
-  if (pathname === '/seller/performance') {
-    return {
-      key: 'seller-performance',
-      element: (
-        <RequireRole role="seller">
-          <SellerPerformancePage />
-        </RequireRole>
-      ),
-    };
-  }
+  if (sellerProductMatch) return { key: `seller-product-${sellerProductMatch.id}`, element: <RequireRole role="seller"><ProductEditorPage productId={sellerProductMatch.id} /></RequireRole> };
 
   /* ------------------------------- Rider -------------------------------- */
   if (pathname === '/rider') {
@@ -427,14 +318,6 @@ function resolveRoute(path: string): RouteMatch {
   return { key: '404', element: <NotFoundPage /> };
 }
 
-/** Replaces the URL with `to`; renders `children` meanwhile so there is no blank/spinner flash. */
-const Redirect: React.FC<{ to: string; children?: React.ReactNode }> = ({ to, children }) => {
-  React.useEffect(() => {
-    navigate(to, { replace: true });
-  }, [to]);
-  return <>{children ?? <Spinner label="Opening your workspace…" />}</>;
-};
-
 const Shell: React.FC = () => {
   const path = useRoutePath();
   const { user } = useAuth();
@@ -443,18 +326,19 @@ const Shell: React.FC = () => {
 
   // Workspace home shortcuts for signed-in users hitting the landing page.
   React.useEffect(() => {
-    if (path === '/' && user) {
+    if (user?.role === 'seller' && path === '/seller') {
+      navigate('/seller/dashboard', { replace: true });
+      return;
+    }
+    if (user && (path === '/' || /^\/(customer|seller|rider)\/(auth|signup|recover)(\?|$)/.test(path))) {
       const home = roleHome(user.role);
       navigate(home, { replace: true });
     }
   }, [path, user]);
 
-  const content = route ? route.element : <NotFoundPage />;
-
-  // Signed-in sellers get their own operating workspace (sidebar / bottom nav).
-  if (user?.role === 'seller' && /^\/seller(\/|$|\?)/.test(path)) {
-    return <SellerShell>{content}</SellerShell>;
-  }
+  const content = <React.Fragment key={route?.key}>{route ? route.element : <NotFoundPage />}</React.Fragment>;
+  if (path === '/' || /^\/(customer|seller|rider)\/(auth|login|signup|recover)(\?|$)/.test(path)) return content;
+  if (user?.role === 'seller' && (path === '/seller' || path.startsWith('/seller/')) && !/\/(auth|signup|recover)(\?|$)/.test(path)) return <SellerShell>{content}</SellerShell>;
   return <AppShell cartCount={itemCount}>{content}</AppShell>;
 };
 

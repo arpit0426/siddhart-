@@ -98,7 +98,7 @@ export function clampPage(query: { page?: unknown; pageSize?: unknown }, default
 const PRODUCT_COLUMNS = `
   p.id, p.store_id, p.name, p.description, p.category, p.image, p.price, p.mrp, p.brand, p.unit, p.sku,
   p.availability, p.product_info, p.is_published, p.created_at, p.updated_at,
-  s.name AS store_name, s.status AS store_status, s.city AS store_city, s.image AS store_image,
+  s.name AS store_name, CASE WHEN s.is_published=0 THEN 'inactive' WHEN s.temporarily_unavailable=1 THEN 'closed' ELSE s.status END AS store_status, s.city AS store_city, s.image AS store_image,
   s.supports_delivery, s.supports_pickup, s.supports_reservations,
   i.stock_quantity, i.reserved_quantity, i.low_stock_threshold,
   (i.stock_quantity - i.reserved_quantity) AS stock`;
@@ -126,7 +126,7 @@ export function decorateProduct(row: any) {
 export function queryProducts(q: ProductQuery) {
   const where: string[] = [`p.is_published = 1`];
   if (!q.includeUnpublishedStores) {
-    where.push(`s.status != 'inactive'`, `s.published_at IS NOT NULL`);
+    where.push(`s.status != 'inactive'`, `s.is_published = 1`, `s.published_at IS NOT NULL`);
   }
   const params: any[] = [];
 
@@ -243,6 +243,7 @@ export interface StoreQuery {
 
 export function decorateStore(row: any) {
   const { distance_km, ...rest } = row;
+  if (rest.temporarily_unavailable) rest.status = 'closed';
   return {
     ...rest,
     isOpen: rest.status === 'open',
@@ -267,7 +268,7 @@ export function decorateStore(row: any) {
 }
 
 export function queryStores(q: StoreQuery) {
-  const where: string[] = [`s.status != 'inactive'`, `s.published_at IS NOT NULL`];
+  const where: string[] = [`s.status != 'inactive'`, `s.is_published = 1`, `s.published_at IS NOT NULL`];
   const params: any[] = [];
   const lat = num(q.lat);
   const lng = num(q.lng);
@@ -291,7 +292,7 @@ export function queryStores(q: StoreQuery) {
     );
     params.push(...categories, ...categories);
   }
-  if (q.openOnly === true || q.openOnly === 'true') where.push(`s.status = 'open'`);
+  if (q.openOnly === true || q.openOnly === 'true') where.push(`s.status = 'open' AND s.temporarily_unavailable = 0`);
   const maxDistance = num(q.maxDistanceKm);
   if (hasGeo && maxDistance !== undefined) {
     where.push(`s.latitude IS NOT NULL AND s.longitude IS NOT NULL AND ${DISTANCE_SQL} <= ?`);
@@ -313,7 +314,7 @@ export function queryStores(q: StoreQuery) {
     .prepare(
       `SELECT s.id, s.name, s.description, s.category, s.address, s.city, s.state, s.pincode,
               s.latitude, s.longitude, s.opening_hours, s.opens_at, s.closes_at, s.operating_days,
-              s.contact_phone, s.status, s.closure_type, s.status_message, s.image, s.logo,
+              s.contact_phone, s.contact_email, s.is_published, s.temporarily_unavailable, s.status, s.closure_type, s.status_message, s.image, s.logo,
               s.supports_delivery, s.supports_pickup, s.supports_reservations,
               s.fulfilment_min_minutes, s.fulfilment_max_minutes, s.published_at,
               (SELECT COUNT(*) FROM products p WHERE p.store_id = s.id AND p.is_published = 1) AS product_count,
@@ -332,7 +333,7 @@ export function categoryCounts() {
     .prepare(
       `SELECT p.category AS category, COUNT(*) AS count, COUNT(DISTINCT p.store_id) AS stores
        FROM products p JOIN stores s ON p.store_id = s.id
-       WHERE p.is_published = 1 AND s.status != 'inactive' AND s.published_at IS NOT NULL
+       WHERE p.is_published = 1 AND s.status != 'inactive' AND s.is_published=1 AND s.published_at IS NOT NULL
        GROUP BY p.category ORDER BY count DESC, p.category ASC`
     )
     .all() as { category: string; count: number; stores: number }[];

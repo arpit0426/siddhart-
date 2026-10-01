@@ -140,8 +140,8 @@ await suite.test('seller portal: every page renders real data without errors', a
   const sellerOrders = await seller.get('/api/seller/orders');
   const sellerOrderId = sellerOrders.body.orders[0].id as string;
   const routes: [string, RegExp?][] = [
-    ['/seller/dashboard', /Needs Your Attention/],
-    ['/seller', /Needs Your Attention/],
+    ['/seller/dashboard', /Needs your attention/i],
+    ['/seller', /Needs your attention/i],
     ['/seller/orders', /Orders/],
     [`/seller/orders/${sellerOrderId}`, /NB-/],
     ['/seller/products', /Products/],
@@ -149,7 +149,7 @@ await suite.test('seller portal: every page renders real data without errors', a
     [`/seller/products/${sellerProductId}`, /Edit product/],
     ['/seller/inventory', /Inventory/],
     ['/seller/requests'],
-    ['/seller/store', /Store settings/],
+    ['/seller/store', /My store/],
     ['/seller/earnings', /Earnings/],
     ['/seller/performance'],
     ['/seller/notifications'],
@@ -157,9 +157,9 @@ await suite.test('seller portal: every page renders real data without errors', a
     ['/seller/security'],
     ['/seller/stock-requests', /Stock requests/],
     ['/seller/reservations', /Reservations/],
-    ['/seller/analytics', /Performance/],
-    ['/seller/profile', /Edit Profile/],
-    ['/seller/business', /Business Profile/],
+    ['/seller/analytics', /Analytics|Performance/i],
+    ['/seller/profile', /My profile|Edit profile/i],
+    ['/seller/business', /Business profile/i],
     ['/seller/settings', /Settings/],
     ['/seller/settings/security'],
   ];

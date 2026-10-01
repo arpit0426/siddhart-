@@ -15,7 +15,7 @@ import { useApiResource } from '../lib/hooks';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { Badge, Button, Card, ErrorNote, Field, InfoNote, SectionHeader, Skeleton, Spinner } from '../components/ui';
-import { initials, storeState, StoreStatusPill } from '../components/layout/SellerShell';
+import { initials, storeState, StoreStatusPill } from '../components/layout/sellerState';
 import { formatDate } from '../lib/format';
 import { resetSavedCache } from '../lib/saved';
 import type { Store } from '../types';
