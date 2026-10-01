@@ -374,8 +374,8 @@ export const AuthGatewayPage: React.FC = () => {
             <p className="mt-5 inline-flex items-start gap-2 self-start rounded-xl border border-blue-200 bg-blue-50/80 px-3 py-2 text-[11px] text-blue-900">
               <BadgeCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span>
-                <strong className="font-semibold">Development/staging demo:</strong> each login screen
-                offers a one-click demo account, seeded into the real database.
+                <strong className="font-semibold">Ready to use:</strong> each login screen has a
+                working demo account, seeded into the real database. One click signs you in.
               </span>
             </p>
           )}
@@ -406,6 +406,12 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
   }, [meta.loginTitle]);
 
   const demoAccount = config?.demoAccounts.find((account) => account.role === role);
+
+  // Cookie sessions are redirected by the server. Bearer-only sessions (embedded
+  // preview) land here after a refresh and should continue straight in.
+  useEffect(() => {
+    if (user && user.role === role) navigate(safeNext(next, user.role), { replace: true });
+  }, [user, role, next]);
 
   const signIn = async (email: string, pass: string) => {
     setError(null);
@@ -507,7 +513,7 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
           {config?.demoMode && demoAccount && (
             <div className="mt-6 rounded-xl border border-dashed border-blue-300 bg-blue-50/60 p-4">
               <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">
-                Demo {meta.name} · development/staging only
+                Working {meta.name} account
               </p>
               <p className="mt-1 text-xs font-semibold text-slate-800">{demoAccount.name}</p>
               <p className="text-xs text-slate-600">{demoAccount.email}</p>
@@ -528,7 +534,8 @@ export const RoleAuthPage: React.FC<{ role: Role }> = ({ role }) => {
                 Use Demo Account
               </Button>
               <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-                Signs in through the same server authentication as any other account.
+                This is a real, active account in the database. One click signs in through the same
+                server authentication as any other account.
               </p>
             </div>
           )}

@@ -379,6 +379,7 @@ function ensureUser(input: {
     db.prepare(
       `UPDATE users SET role = ?, name = ?, phone = ?,
          password_hash = ?, password_salt = ?, status = 'active',
+         failed_login_attempts = 0, locked_until = NULL,
          vehicle_type = COALESCE(?, vehicle_type),
          vehicle_number = COALESCE(?, vehicle_number),
          license_number = COALESCE(?, license_number),
