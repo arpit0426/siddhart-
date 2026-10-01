@@ -1,7 +1,7 @@
 import React from 'react';
 import { ToastProvider } from './context/ToastContext';
 import { AuthProvider, useAuth, roleHome } from './context/AuthContext';
-import { CartProvider } from './context/CartContext';
+import { CartProvider, useCart } from './context/CartContext';
 import { AppShell } from './components/layout/AppShell';
 import { RequireRole } from './components/RequireRole';
 import { matchPath, navigate, useRoutePath } from './lib/router';
@@ -400,6 +400,7 @@ function resolveRoute(path: string): RouteMatch {
 const Shell: React.FC = () => {
   const path = useRoutePath();
   const { user } = useAuth();
+  const { itemCount } = useCart();
   const route = resolveRoute(path);
 
   // Workspace home shortcuts for signed-in users hitting the landing page.
@@ -410,7 +411,7 @@ const Shell: React.FC = () => {
     }
   }, [path, user]);
 
-  return <AppShell>{route ? route.element : <NotFoundPage />}</AppShell>;
+  return <AppShell cartCount={itemCount}>{route ? route.element : <NotFoundPage />}</AppShell>;
 };
 
 export default function App() {
